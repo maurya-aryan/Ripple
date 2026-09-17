@@ -1,0 +1,6 @@
+{
+  "incident": "event-stream-2018",
+  "counts": { "in_tree": "int", "semver_admits": "int", "symbol_reachable": "int", "unknown": "int" },
+  "packages": "Package[]  — array of contracts/graph.schema.json objects",
+  "historical_reference": { "documented_impact": "string", "source_url": "string" }
+}
