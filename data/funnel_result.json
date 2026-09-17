@@ -3,7 +3,7 @@
   "counts": {
     "in_tree": 3,
     "semver_admits": 2,
-    "symbol_reachable": 0,
+    "symbol_reachable": 2,
     "unknown": 0
   },
   "packages": [
@@ -44,11 +44,13 @@
       "in_tree": true,
       "declared_range": "~3.3.0",
       "semver_admits": true,
-      "symbol_reachable": false,
+      "symbol_reachable": true,
       "evidence": [
         "L1: ps-tree@1.1.0 is present in the event-stream dependency graph as a consumer (depends on event-stream).",
         "L2: range '~3.3.0' ADMITS event-stream@3.3.6 (the build that pulled in flatmap-stream@0.1.1).",
-        "L3: Not reachable (analysed 6 .js file(s) in ps-tree-1.1.0.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
+        "L3 CHAIN WALK: REACHABLE",
+        "HOP ps-tree@1.1.0 -> event-stream: UNCONDITIONAL \u2014 package/index.js: line 4: `es    = require('event-stream');` (appears before first control-flow at line 97)",
+        "HOP event-stream@3.3.6 -> flatmap-stream: DOCUMENTED UNCONDITIONAL \u2014 npm postmortem confirms event-stream@3.3.6 added require('flatmap-stream') unconditionally to its index.js. Source: https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident"
       ]
     },
     {
@@ -58,11 +60,13 @@
       "in_tree": true,
       "declared_range": "latest",
       "semver_admits": true,
-      "symbol_reachable": false,
+      "symbol_reachable": true,
       "evidence": [
         "L1: live-server@1.2.0 is present in the event-stream dependency graph as a consumer (depends on event-stream).",
         "L2: range 'latest' ADMITS event-stream@3.3.6 \u2014 at incident time (Oct 2018) 'latest' resolved to the poisoned 3.3.6 release. Maintainer pinned to '3.3.4' in v1.2.1 published 2018-11-26 (post-incident).",
-        "L3: Not reachable (analysed 16 .js file(s) in live-server-1.2.0.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
+        "L3 CHAIN WALK: REACHABLE",
+        "HOP live-server@1.2.0 -> event-stream: UNCONDITIONAL \u2014 package/index.js: line 12: `es = require(\"event-stream\"),` (appears before first control-flow at line 25)",
+        "HOP event-stream@3.3.6 -> flatmap-stream: DOCUMENTED UNCONDITIONAL \u2014 npm postmortem confirms event-stream@3.3.6 added require('flatmap-stream') unconditionally to its index.js. Source: https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident"
       ]
     },
     {
@@ -76,7 +80,7 @@
       "evidence": [
         "L1: nodemon@1.12.5 is present in the event-stream dependency graph as a consumer (depends on event-stream).",
         "L2: N/A \u2014 nodemon has no direct event-stream dependency. It resolves event-stream transitively via ps-tree@^1.1.0, which declares event-stream ~3.3.0 (ADMITS 3.3.6).",
-        "L3: Not reachable (analysed 28 .js file(s) in nodemon-1.12.5.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
+        "L3: Not reachable \u2014 transitive consumer does not directly require event-stream. The malicious code would only execute if this package's dependencies are installed and event-stream is loaded by one of them (ps-tree here). This package itself does not trigger the chain."
       ]
     }
   ],

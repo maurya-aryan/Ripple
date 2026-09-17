@@ -3,21 +3,31 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RIPPLE — event-stream 2018 Supply-Chain Incident</title>
+  <title>RIPPLE — Supply-Chain Reachability</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
 </head>
 <body>
-  <!-- Header Navbar -->
+  <!-- ── HEADER ────────────────────────────────────────────── -->
   <header class="navbar">
     <div class="brand">
       <div class="brand-icon">R</div>
       <div class="brand-title">RIPPLE</div>
-      <span class="badge-incident">event-stream · Nov 2018 Supply-Chain Attack</span>
+      <span class="badge-incident" id="incident-badge">event-stream · Nov 2018</span>
     </div>
 
+    <!-- Mode Toggle -->
+    <div class="mode-toggle" id="mode-toggle">
+      <button class="mode-btn active" id="btn-mode-replay" data-mode="replay">
+        ⏪ Replay: Event-Stream 2018
+      </button>
+      <button class="mode-btn" id="btn-mode-live" data-mode="live">
+        ⚡ Live Scan: Any Package
+      </button>
+    </div>
+
+    <!-- Funnel Counters -->
     <div class="controls-bar">
-      <!-- Funnel Counters -->
       <div class="funnel-stats">
         <div class="stat-item" id="stat-intree">
           <span class="stat-label">In Tree</span>
@@ -30,33 +40,59 @@
         </div>
         <span class="stat-arrow">→</span>
         <div class="stat-item" id="stat-symbol">
-          <span class="stat-label">Symbol Reachable</span>
+          <span class="stat-label">Reachable</span>
           <span class="stat-value" id="val-symbol">—</span>
         </div>
       </div>
 
-      <!-- Action Button -->
+      <!-- Replay Mode: Compromise button -->
       <button class="btn-primary" id="btn-compromise">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
         </svg>
         Compromise flatmap-stream
       </button>
+
+      <!-- Live Mode: Scan input -->
+      <div class="live-controls" id="live-controls" style="display:none;">
+        <div class="scan-input-wrap">
+          <span class="scan-prompt">$</span>
+          <input type="text" id="scan-input" class="scan-input" placeholder="scan express" autocomplete="off" spellcheck="false">
+        </div>
+        <button class="btn-primary" id="btn-scan">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          Scan
+        </button>
+      </div>
     </div>
   </header>
 
-  <!-- Main Canvas Container -->
+  <!-- ── MAIN ──────────────────────────────────────────────── -->
   <div class="main-container">
-    <!-- Cytoscape Container -->
-    <div id="cy"></div>
 
-    <!-- Legend Overlay -->
-    <div class="legend-box">
-      <div class="legend-title">Node Classification</div>
-      <div class="legend-item"><span class="dot source"></span> Compromise Source (Origin)</div>
-      <div class="legend-item"><span class="dot red"></span> Symbol Reachable (Exposed)</div>
-      <div class="legend-item"><span class="dot amber"></span> UNKNOWN (Unanalysable)</div>
-      <div class="legend-item"><span class="dot green"></span> Filtered Out (Safe)</div>
+    <!-- Graph Panel -->
+    <div class="graph-pane" id="graph-pane">
+      <div id="cy"></div>
+
+      <!-- Legend Overlay -->
+      <div class="legend-box">
+        <div class="legend-title">Node Classification</div>
+        <div class="legend-item"><span class="dot source"></span> Compromise Source / Target</div>
+        <div class="legend-item"><span class="dot red"></span> Reachable (Exposed)</div>
+        <div class="legend-item"><span class="dot amber"></span> UNKNOWN (Unanalysable)</div>
+        <div class="legend-item"><span class="dot green"></span> Not Reachable (Safe)</div>
+      </div>
+    </div>
+
+    <!-- Terminal Panel (Live mode only) -->
+    <div class="terminal-pane" id="terminal-pane" style="display:none;">
+      <div class="terminal-header">
+        <span class="term-dot red-dot"></span><span class="term-dot amber-dot"></span><span class="term-dot green-dot"></span>
+        <span class="term-title">ripple live-scan</span>
+      </div>
+      <div class="terminal-body" id="terminal-body">
+        <div class="term-line muted">Ready. Enter a package name and press Scan.</div>
+      </div>
     </div>
 
     <!-- Side Evidence Panel -->
@@ -70,22 +106,19 @@
       </div>
       <div class="evidence-header">Evaluation Evidence (L1 → L2 → L3)</div>
       <div class="evidence-list" id="panel-evidence-list">
-        <div class="evidence-card muted">No package selected. Click a graph node to view the funnel evidence chain.</div>
+        <div class="evidence-card muted">No package selected. Click a node to view evidence.</div>
       </div>
     </div>
   </div>
 
-  <!-- Footer Strip -->
+  <!-- ── FOOTER ─────────────────────────────────────────────── -->
   <footer class="footer-strip">
     <div class="footer-impact" id="footer-impact">
       <span class="footer-icon">⚠</span>
-      <span id="documented-impact">
-        For a typical supply-chain injection, our reachability funnel correctly flags every real consumer as exposed. What it cannot detect — and we say so rather than hide it — is a runtime-conditional targeted payload like event-stream's, which decrypted itself only for one specific victim using data our static analysis never executes. That class of attack requires dynamic or behavioral analysis: a distinct, harder problem we've scoped as future work, not something this tool claims to solve.
-      </span>
+      <span id="documented-impact">Loading…</span>
     </div>
-    <a id="source-url" href="https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident" target="_blank" rel="noopener" class="footer-link">
-      npm incident writeup →
-    </a>
+    <a id="source-url" href="https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident"
+       target="_blank" rel="noopener" class="footer-link">npm incident writeup →</a>
   </footer>
 
   <script src="app.js"></script>
