@@ -1,0 +1,106 @@
+[
+  {
+    "package": "event-stream",
+    "version": "3.3.4",
+    "in_tree": true,
+    "declared_range": "^0.1.0",
+    "semver_admits": true,
+    "symbol_reachable": true,
+    "evidence": [
+      "L1: present in resolved dependency tree (event-stream@3.3.4)",
+      "L2: declared flatmap-stream range '^0.1.0' admits compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: Symbol reachable \u2014 Direct require('flatmap-stream') or export present in source code"
+    ]
+  },
+  {
+    "package": "flatmap-stream",
+    "version": "0.0.1-security",
+    "in_tree": true,
+    "declared_range": "0.1.1",
+    "semver_admits": true,
+    "symbol_reachable": true,
+    "evidence": [
+      "L1: present in resolved dependency tree (flatmap-stream@0.0.1-security)",
+      "L2: declared flatmap-stream range '0.1.1' admits compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: Symbol reachable \u2014 Direct require('flatmap-stream') or export present in source code"
+    ]
+  },
+  {
+    "package": "ps-tree",
+    "version": "1.1.0",
+    "in_tree": true,
+    "declared_range": "~3.3.4",
+    "semver_admits": true,
+    "symbol_reachable": null,
+    "evidence": [
+      "L1: present in resolved dependency tree (ps-tree@1.1.0)",
+      "L2: declared flatmap-stream range '~3.3.4' admits compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: UNKNOWN \u2014 Uses dynamic native process execution (child_process.exec / ps binary) and unanalysable dynamic require bindings"
+    ]
+  },
+  {
+    "package": "nodemon",
+    "version": "1.18.6",
+    "in_tree": true,
+    "declared_range": "^1.1.0",
+    "semver_admits": false,
+    "symbol_reachable": false,
+    "evidence": [
+      "L1: present in resolved dependency tree (nodemon@1.18.6)",
+      "L2: declared flatmap-stream range '^1.1.0' rejects compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: Not reachable \u2014 Static AST/regex scan of JS files confirmed zero references to flatmap-stream"
+    ]
+  },
+  {
+    "package": "npm-watch",
+    "version": "0.3.0",
+    "in_tree": true,
+    "declared_range": "^3.3.4",
+    "semver_admits": true,
+    "symbol_reachable": false,
+    "evidence": [
+      "L1: present in resolved dependency tree (npm-watch@0.3.0)",
+      "L2: declared flatmap-stream range '^3.3.4' admits compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: Not reachable \u2014 Static AST/regex scan of JS files confirmed zero references to flatmap-stream"
+    ]
+  },
+  {
+    "package": "stream-combiner",
+    "version": "0.2.2",
+    "in_tree": true,
+    "declared_range": "~0.1.1",
+    "semver_admits": false,
+    "symbol_reachable": false,
+    "evidence": [
+      "L1: present in resolved dependency tree (stream-combiner@0.2.2)",
+      "L2: declared flatmap-stream range '~0.1.1' rejects compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: Not reachable \u2014 Static AST/regex scan of JS files confirmed zero references to flatmap-stream"
+    ]
+  },
+  {
+    "package": "through",
+    "version": "2.3.8",
+    "in_tree": true,
+    "declared_range": "~2.3.4",
+    "semver_admits": false,
+    "symbol_reachable": false,
+    "evidence": [
+      "L1: present in resolved dependency tree (through@2.3.8)",
+      "L2: declared flatmap-stream range '~2.3.4' rejects compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: Not reachable \u2014 Static AST/regex scan of JS files confirmed zero references to flatmap-stream"
+    ]
+  },
+  {
+    "package": "split",
+    "version": "1.0.1",
+    "in_tree": true,
+    "declared_range": "0.3.x",
+    "semver_admits": false,
+    "symbol_reachable": false,
+    "evidence": [
+      "L1: present in resolved dependency tree (split@1.0.1)",
+      "L2: declared flatmap-stream range '0.3.x' rejects compromised versions (0.1.1 / 3.0.0-3.0.1)",
+      "L3: Not reachable \u2014 Static AST/regex scan of JS files confirmed zero references to flatmap-stream"
+    ]
+  }
+]
