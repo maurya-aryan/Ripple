@@ -1,0 +1,119 @@
+{
+  "incident": "event-stream-2018",
+  "counts": {
+    "in_tree": 8,
+    "semver_admits": 4,
+    "symbol_reachable": 1,
+    "unknown": 1
+  },
+  "packages": [
+    {
+      "package": "flatmap-stream",
+      "version": "0.1.1",
+      "in_tree": true,
+      "declared_range": "0.1.1",
+      "semver_admits": true,
+      "symbol_reachable": true,
+      "evidence": [
+        "L1: Malicious target package",
+        "L2: Malicious version range 0.1.1 published to npm",
+        "L3: Contains AES-256 encrypted payload targeting Copay wallet"
+      ]
+    },
+    {
+      "package": "event-stream",
+      "version": "3.3.4",
+      "in_tree": true,
+      "declared_range": "^0.1.0",
+      "semver_admits": true,
+      "symbol_reachable": true,
+      "evidence": [
+        "L1: Added flatmap-stream 0.1.1 as direct dependency in release 3.3.6",
+        "L2: Declared range ^0.1.0 admits compromised version 0.1.1",
+        "L3: Directly requires and re-exports flatmap-stream symbol"
+      ]
+    },
+    {
+      "package": "ps-tree",
+      "version": "1.1.0",
+      "in_tree": true,
+      "declared_range": "~3.3.4",
+      "semver_admits": true,
+      "symbol_reachable": null,
+      "evidence": [
+        "L1: Present in resolved dependency tree of nodemon",
+        "L2: Declared range ~3.3.4 admits event-stream 3.3.6",
+        "L3: UNKNOWN - Contains minified file bin/ps-tree.js that could not be statically parsed"
+      ]
+    },
+    {
+      "package": "nodemon",
+      "version": "1.18.6",
+      "in_tree": true,
+      "declared_range": "^1.1.0",
+      "semver_admits": false,
+      "symbol_reachable": false,
+      "evidence": [
+        "L1: Present in resolved dependency tree",
+        "L2: Declared range ^1.1.0 rejects compromised flatmap-stream version",
+        "L3: Filtered out at L2 semver gate"
+      ]
+    },
+    {
+      "package": "npm-watch",
+      "version": "0.3.0",
+      "in_tree": true,
+      "declared_range": "^3.3.4",
+      "semver_admits": true,
+      "symbol_reachable": false,
+      "evidence": [
+        "L1: Present in dependency tree",
+        "L2: Declared range ^3.3.4 admits event-stream 3.3.6",
+        "L3: Static analysis confirms no invocation or re-export of flatmap-stream symbols"
+      ]
+    },
+    {
+      "package": "stream-combiner",
+      "version": "0.2.2",
+      "in_tree": true,
+      "declared_range": "~0.1.1",
+      "semver_admits": false,
+      "symbol_reachable": false,
+      "evidence": [
+        "L1: Present in dependency tree",
+        "L2: Declared range ~0.1.1 rejects compromised version",
+        "L3: Filtered out at L2 semver gate"
+      ]
+    },
+    {
+      "package": "through",
+      "version": "2.3.8",
+      "in_tree": true,
+      "declared_range": "~2.3.4",
+      "semver_admits": false,
+      "symbol_reachable": false,
+      "evidence": [
+        "L1: Present in dependency tree",
+        "L2: Declared range ~2.3.4 rejects compromised version",
+        "L3: Filtered out at L2 semver gate"
+      ]
+    },
+    {
+      "package": "split",
+      "version": "1.0.1",
+      "in_tree": true,
+      "declared_range": "0.3.x",
+      "semver_admits": false,
+      "symbol_reachable": false,
+      "evidence": [
+        "L1: Present in dependency tree",
+        "L2: Declared range 0.3.x rejects compromised version",
+        "L3: Filtered out at L2 semver gate"
+      ]
+    }
+  ],
+  "historical_reference": {
+    "documented_impact": "Malicious flatmap-stream package compromised Copay Bitcoin wallet app, stealing private keys for wallets holding >8,000 BTC (~$100M+).",
+    "source_url": "https://github.com/advisories/GHSA-556v-v3w5-4589"
+  }
+}

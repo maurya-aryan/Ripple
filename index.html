@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RIPPLE — Supply Chain Incident Visualizer</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+</head>
+<body>
+  <!-- Header Navbar -->
+  <header class="navbar">
+    <div class="brand">
+      <div class="brand-icon">R</div>
+      <div class="brand-title">RIPPLE</div>
+      <span class="badge-incident">Nov 2018 event-stream Incident</span>
+    </div>
+
+    <div class="controls-bar">
+      <!-- Funnel Counters -->
+      <div class="funnel-stats">
+        <div class="stat-item" id="stat-intree">
+          <span class="stat-label">In Tree</span>
+          <span class="stat-value" id="val-intree">0</span>
+        </div>
+        <span class="stat-divider">&rarr;</span>
+        <div class="stat-item" id="stat-semver">
+          <span class="stat-label">SemVer Admits</span>
+          <span class="stat-value" id="val-semver">0</span>
+        </div>
+        <span class="stat-divider">&rarr;</span>
+        <div class="stat-item" id="stat-symbol">
+          <span class="stat-label">Symbol Reachable</span>
+          <span class="stat-value" id="val-symbol">0</span>
+        </div>
+      </div>
+
+      <!-- Action Button -->
+      <button class="btn-primary" id="btn-compromise">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+        </svg>
+        Compromise flatmap-stream
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Canvas Container -->
+  <div class="main-container">
+    <!-- Cytoscape Container -->
+    <div id="cy"></div>
+
+    <!-- Legend Overlay -->
+    <div class="legend-box">
+      <div class="legend-title">L3 Symbol Reachability</div>
+      <div class="legend-item"><span class="dot red"></span> Reachable (Symbol Invoked)</div>
+      <div class="legend-item"><span class="dot amber"></span> UNKNOWN (Unanalysable / Minified)</div>
+      <div class="legend-item"><span class="dot green"></span> Filtered Out (Safe / Rejected)</div>
+    </div>
+
+    <!-- Side Evidence Panel -->
+    <div class="side-panel" id="side-panel">
+      <h3 class="panel-title" id="panel-pkg-name">Select a Node</h3>
+      <div class="panel-subtitle" id="panel-pkg-version">Click any package node to inspect evidence</div>
+      <div class="status-badge" id="panel-status-badge" style="display: none;"></div>
+      
+      <div class="evidence-header">Evaluation Evidence</div>
+      <div class="evidence-list" id="panel-evidence-list">
+        <div class="evidence-card">No package selected. Click a graph node to view L1/L2/L3 evidence array.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer Strip -->
+  <footer class="footer-strip">
+    <div class="footer-impact">
+      <span class="footer-icon">⚠️</span>
+      <span id="documented-impact">Loading historical reference...</span>
+    </div>
+    <a id="source-url" href="#" target="_blank" class="footer-link">
+      Source Reference &rarr;
+    </a>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
