@@ -1,377 +1,656 @@
-/* app.js — RIPPLE dual-mode frontend
+/* app.js — RIPPLE
  *
- * Modes:
- *   Replay Mode  — loads /api/replay/event-stream-2018 and animates the known funnel
- *   Live Scan    — connects to /api/scan/stream?package=NAME via SSE; builds graph live
+ * Two modes, one board:
+ *   Replay  — fetches the cached event-stream/2018 case file once, then
+ *             narrates it into the terminal and board client-side. No
+ *             further network calls — works with the network off.
+ *   Live    — opens an EventSource to /api/scan/stream and renders each
+ *             log/node/edge/status event the instant it arrives, so the
+ *             terminal line and the board change land together.
  */
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
 
-  // ── DOM refs ──────────────────────────────────────────────
-  const btnModeReplay  = document.getElementById('btn-mode-replay');
-  const btnModeLive    = document.getElementById('btn-mode-live');
-  const btnCompromise  = document.getElementById('btn-compromise');
-  const liveControls   = document.getElementById('live-controls');
-  const scanInput      = document.getElementById('scan-input');
-  const btnScan        = document.getElementById('btn-scan');
-  const terminalPane   = document.getElementById('terminal-pane');
-  const terminalBody   = document.getElementById('terminal-body');
-  const incidentBadge  = document.getElementById('incident-badge');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  const valInTree      = document.getElementById('val-intree');
-  const valSemVer      = document.getElementById('val-semver');
-  const valSymbol      = document.getElementById('val-symbol');
-  const statInTree     = document.getElementById('stat-intree');
-  const statSemVer     = document.getElementById('stat-semver');
-  const statSymbol     = document.getElementById('stat-symbol');
+  // Cytoscape's stylesheet does not resolve CSS custom properties — read the
+  // computed values once so the board matches the page's light/dark theme.
+  const rootStyle = getComputedStyle(document.documentElement);
+  const cssVar = name => rootStyle.getPropertyValue(name).trim();
+  const C = {
+    ink: cssVar('--ink'), inkSoft: cssVar('--ink-soft'),
+    paper: cssVar('--paper'), paperRaised: cssVar('--paper-raised'), rule: cssVar('--rule-strong'),
+    source: cssVar('--source'), sourceBg: cssVar('--source-bg'),
+    reachable: cssVar('--reachable'), reachableBg: cssVar('--reachable-bg'),
+    unknown: cssVar('--unknown'), unknownBg: cssVar('--unknown-bg'),
+    safe: cssVar('--safe'),
+  };
 
-  const panelPkgName     = document.getElementById('panel-pkg-name');
-  const panelPkgVersion  = document.getElementById('panel-pkg-version');
-  const panelStatusBadge = document.getElementById('panel-status-badge');
-  const panelEvidenceList= document.getElementById('panel-evidence-list');
-  const documentedImpact = document.getElementById('documented-impact');
-  const sourceUrlEl      = document.getElementById('source-url');
+  // ── DOM refs ────────────────────────────────────────────────
+  const tabReplay      = document.getElementById('tab-replay');
+  const tabLive         = document.getElementById('tab-live');
+  const controlsReplay  = document.getElementById('controls-replay');
+  const controlsLive    = document.getElementById('controls-live');
+  const btnRunReplay    = document.getElementById('btn-run-replay');
+  const scanForm        = document.getElementById('scan-form');
+  const scanInput       = document.getElementById('scan-input');
+  const capInput        = document.getElementById('cap-input');
+  const btnScan         = document.getElementById('btn-scan');
+  const transcript       = document.getElementById('transcript');
+  const caseSubject     = document.getElementById('case-subject');
+  const emptyBoard      = document.getElementById('empty-board');
 
-  // ── Cytoscape setup ──────────────────────────────────────
+  const vInTree  = document.getElementById('v-intree');
+  const vSemver  = document.getElementById('v-semver');
+  const vReach   = document.getElementById('v-reach');
+  const vUnknown = document.getElementById('v-unknown');
+  const cellInTree  = document.getElementById('cell-intree');
+  const cellSemver  = document.getElementById('cell-semver');
+  const cellReach   = document.getElementById('cell-reach');
+  const cellUnknown = document.getElementById('cell-unknown');
+  const unknownInfo = document.getElementById('unknown-info');
+
+  const modalOverlay = document.getElementById('modal-overlay');
+  const dossierModal = document.getElementById('dossier-modal');
+  const dossierClose = document.getElementById('dossier-close');
+  const dossierName  = document.getElementById('dossier-name');
+  const dossierMeta  = document.getElementById('dossier-meta');
+  const dossierStamp = document.getElementById('dossier-stamp');
+  const dossierBody  = document.getElementById('dossier-body');
+
+  const footnoteText = document.getElementById('footnote-text');
+  const footnoteLink = document.getElementById('footnote-link');
+
+  // ── Cytoscape ───────────────────────────────────────────────
   const cy = cytoscape({
     container: document.getElementById('cy'),
     elements: [],
     style: [
-      {
-        selector: 'node',
-        style: {
-          label:                 'data(label)',
-          color:                 '#f1f5f9',
-          'font-family':         'JetBrains Mono, monospace',
-          'font-size':           10,
-          'text-valign':         'center',
-          'text-halign':         'center',
-          'text-wrap':           'wrap',
-          'background-color':    '#1e293b',
-          'border-width':        2,
-          'border-color':        '#334155',
-          width:                 86,
-          height:                86,
-          'transition-property': 'background-color, border-color, width, height',
-          'transition-duration': '350ms',
-        }
-      },
-      { selector: 'node[colorClass = "source"]',
-        style: { 'background-color': '#881337', 'border-color': '#f43f5e', 'border-width': 3,
-          'shadow-blur': 26, 'shadow-color': 'rgba(244,63,94,.85)', 'shadow-opacity': 0.85,
-          width: 94, height: 94 } },
-      { selector: 'node[colorClass = "red"]',
-        style: { 'background-color': '#dc2626', 'border-color': '#f87171',
-          'shadow-blur': 22, 'shadow-color': 'rgba(239,68,68,.7)', 'shadow-opacity': 0.7 } },
-      { selector: 'node[colorClass = "amber"]',
-        style: { 'background-color': '#d97706', 'border-color': '#fbbf24',
-          'shadow-blur': 14, 'shadow-color': 'rgba(245,158,11,.6)', 'shadow-opacity': 0.6 } },
-      { selector: 'node[colorClass = "green"]',
-        style: { 'background-color': '#059669', 'border-color': '#34d399',
-          'shadow-blur': 8, 'shadow-color': 'rgba(16,185,129,.3)', 'shadow-opacity': 0.3 } },
+      { selector: 'node', style: {
+          label: 'data(label)', color: C.ink,
+          'font-family': 'IBM Plex Mono, monospace', 'font-size': 10, 'font-weight': 500,
+          'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'wrap', 'text-max-width': 84,
+          'background-color': C.paperRaised,
+          'border-width': 1.6, 'border-color': C.rule,
+          shape: 'round-rectangle', width: 84, height: 60,
+          'transition-property': 'background-color, border-color, width, height, border-style',
+          'transition-duration': reduceMotion ? '0ms' : '260ms',
+      }},
+      { selector: 'node[state = "source"]', style: {
+          'background-color': C.sourceBg, 'border-color': C.source, 'border-width': 3,
+          shape: 'round-hexagon', width: 96, height: 72, color: C.source, 'font-weight': 700,
+          'transition-property': 'background-color, border-color, width, height, border-style, border-width',
+      }},
+      { selector: 'node[state = "reachable"]', style: {
+          'background-color': C.reachableBg, 'border-color': C.reachable, 'border-width': 2.5,
+          shape: 'round-rectangle', color: C.reachable, 'font-weight': 600,
+      }},
+      { selector: 'node[state = "unknown"]', style: {
+          'background-color': C.unknownBg, 'border-color': C.unknown, 'border-width': 2,
+          'border-style': 'dashed', shape: 'round-diamond', width: 92, height: 68, color: C.unknown,
+      }},
+      { selector: 'node[state = "safe"]', style: {
+          'background-color': C.paper, 'border-color': C.safe, 'border-width': 1.4,
+          'border-style': 'dotted', shape: 'round-rectangle', color: C.inkSoft, opacity: 0.72,
+      }},
+      { selector: 'node.pending', style: { 'border-style': 'dashed', opacity: 0.6 } },
       { selector: 'edge', style: {
-          width: 2, 'line-color': '#334155', 'target-arrow-color': '#334155',
-          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', opacity: 0.55,
-          'transition-property': 'line-color, target-arrow-color, width, opacity',
-          'transition-duration': '300ms' } },
-      { selector: 'edge.ripple', style: {
-          'line-color': '#f43f5e', 'target-arrow-color': '#f43f5e', width: 3.5, opacity: 0.95 } },
+          width: 1.6, 'line-color': C.rule, 'line-style': 'dashed',
+          'curve-style': 'bezier', 'target-arrow-shape': 'none', opacity: 0.65,
+          'transition-property': 'line-color, width, opacity, line-style',
+          'transition-duration': reduceMotion ? '0ms' : '220ms',
+      }},
+      { selector: 'edge[verdict = "reachable"]', style: {
+          'line-color': C.reachable, width: 2.6, 'line-style': 'solid', opacity: 0.9,
+      }},
+      { selector: 'edge[verdict = "admits"]', style: {
+          'line-color': C.unknown, width: 2, 'line-style': 'solid', opacity: 0.8,
+      }},
+      { selector: 'edge[verdict = "unknown"]', style: {
+          'line-color': C.unknown, width: 1.6, 'line-style': 'dotted', opacity: 0.8,
+      }},
+      { selector: 'edge[verdict = "rejects"], edge[verdict = "safe"], edge[verdict = "not_declared"]', style: {
+          'line-color': C.safe, width: 1.3, 'line-style': 'dotted', opacity: 0.55,
+      }},
     ],
-    layout: { name: 'cose', animate: true, padding: 60,
-      nodeRepulsion: () => 12000, idealEdgeLength: () => 140, numIter: 1000 },
+    layout: { name: 'preset' },
+    minZoom: 0.25, maxZoom: 1.4,
+    wheelSensitivity: 0.25,
   });
 
-  // ── Node tap → show evidence ──────────────────────────────
-  cy.on('tap', 'node', evt => showDetails(evt.target.data()));
-  cy.on('tap', evt => { if (evt.target === cy) resetPanel(); });
-
-  function colorClass(role, reachable) {
-    if (role === 'compromise_source' || role === 'target') return 'source';
-    if (reachable === true)  return 'red';
-    if (reachable === null)  return 'amber';
-    return 'green';
-  }
-  function statusText(role, reachable) {
-    if (role === 'target')             return 'TARGET PACKAGE';
-    if (role === 'compromise_source')  return 'COMPROMISE SOURCE';
-    if (reachable === true)            return 'REACHABLE';
-    if (reachable === null)            return 'UNKNOWN';
-    return 'NOT REACHABLE';
-  }
-
-  function showDetails(d) {
-    panelPkgName.textContent    = d.id;
-    panelPkgVersion.textContent = `v${d.version || '?'}  ·  ${d.declared_range || ''}`;
-    panelStatusBadge.style.display = 'inline-block';
-    panelStatusBadge.className     = `status-badge ${d.colorClass}`;
-    panelStatusBadge.textContent   = d.statusText;
-    panelEvidenceList.innerHTML    = '';
-    const evList = d.evidence && d.evidence.length ? d.evidence : ['No evidence recorded.'];
-    evList.forEach(e => {
-      const card = document.createElement('div');
-      card.className   = 'evidence-card';
-      card.textContent = e;
-      panelEvidenceList.appendChild(card);
-    });
+  // Debounced: addNode() calls this after every reveal, but starting a new
+  // animated layout while the previous one is still animating leaves nodes
+  // stranded mid-transition. Coalescing rapid calls into one keeps the
+  // "live-settling" feel without the corruption. Plain 'cose' (bundled with
+  // cytoscape core, no extension-loading edge cases) proved far more
+  // reliable here than fcose for this incremental-reveal pattern.
+  let layoutTimer = null;
+  function runLayout() {
+    if (layoutTimer) clearTimeout(layoutTimer);
+    layoutTimer = setTimeout(() => {
+      layoutTimer = null;
+      const layout = cy.layout({
+        name: 'cose', animate: !reduceMotion, animationDuration: 400,
+        padding: 55, nodeRepulsion: () => 14000, idealEdgeLength: () => 160,
+        numIter: 800, fit: true,
+      });
+      // cose fits to the whole graph's bounding box, which can leave the
+      // compromise source off-centre once consumers cluster to one side.
+      // Re-centre the viewport on it specifically once the layout settles,
+      // without touching the zoom level fit() already chose.
+      layout.one('layoutstop', () => {
+        const sources = cy.nodes().filter(n => n.data('state') === 'source' || n.data('role') === 'target');
+        if (sources.nonempty()) cy.center(sources);
+      });
+      layout.run();
+    }, 90);
   }
 
-  function resetPanel() {
-    panelPkgName.textContent    = 'Select a Node';
-    panelPkgVersion.textContent = 'Click any package node to inspect evidence';
-    panelStatusBadge.style.display = 'none';
-    panelEvidenceList.innerHTML = '<div class="evidence-card muted">No package selected.</div>';
+  const cyContainer = document.getElementById('cy');
+  cy.on('tap', 'node', evt => openDossier(evt.target.data(), cyContainer));
+  cy.on('tap', evt => { if (evt.target === cy) closeDossier(); });
+
+  // ── Terminal ────────────────────────────────────────────────
+  let lineNo = 0;
+  let userScrolledUp = false;
+  transcript.addEventListener('scroll', () => {
+    userScrolledUp = transcript.scrollTop + transcript.clientHeight < transcript.scrollHeight - 24;
+  });
+
+  function termLine(text, level = 'info') {
+    lineNo += 1;
+    const row = document.createElement('div');
+    row.className = `transcript-line ${level}`;
+    const no = document.createElement('span'); no.className = 'no'; no.textContent = String(lineNo).padStart(2, '0');
+    const tx = document.createElement('span'); tx.className = 'tx'; tx.textContent = text;
+    row.appendChild(no); row.appendChild(tx);
+    transcript.appendChild(row);
+    if (!userScrolledUp) transcript.scrollTop = transcript.scrollHeight;
+    return row;
   }
 
-  // ── Utility ───────────────────────────────────────────────
+  function clearTranscript() {
+    transcript.innerHTML = '';
+    lineNo = 0;
+    userScrolledUp = false;
+  }
+
+  // ── Funnel ──────────────────────────────────────────────────
   function countUp(el, to, duration) {
-    const start = Date.now();
-    const tick = () => {
-      const p = Math.min((Date.now() - start) / duration, 1);
-      el.textContent = Math.round(p * to);
+    if (reduceMotion) { el.textContent = to; return; }
+    const start = performance.now();
+    const from = 0;
+    const tick = now => {
+      const p = Math.min((now - start) / duration, 1);
+      el.textContent = Math.round(from + p * (to - from));
       if (p < 1) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }
-  const delay = ms => new Promise(r => setTimeout(r, ms));
-
-  function resetCounters() {
-    [statInTree, statSemVer, statSymbol].forEach(s => s.classList.remove('active'));
-    [valInTree, valSemVer, valSymbol].forEach(v => v.textContent = '—');
+  function resetFunnel() {
+    [cellInTree, cellSemver, cellReach, cellUnknown].forEach(c => c.classList.remove('active'));
+    [vInTree, vSemver, vReach, vUnknown].forEach(v => v.textContent = '—');
+    unknownInfo.hidden = true;
   }
-
-  function activateCounters(inTree, semver, symbol) {
-    statInTree.classList.add('active');  countUp(valInTree, inTree, 600);
-    setTimeout(() => { statSemVer.classList.add('active'); countUp(valSemVer, semver, 600); }, 600);
-    setTimeout(() => { statSymbol.classList.add('active'); countUp(valSymbol, symbol, 600); }, 1200);
-  }
-
-  // ── Add/update a node in cytoscape ───────────────────────
-  function cyAddNode(id, label, version, role, reachable, evidence, declared_range) {
-    const cc = colorClass(role, reachable);
-    const st = statusText(role, reachable);
-    const existing = cy.$(`#${CSS.escape(id)}`);
-    if (existing.length) {
-      existing.data({ colorClass: cc, statusText: st, reachable, evidence: evidence || [] });
+  function setFunnel(counts, unknownZeroReason) {
+    cellInTree.classList.add('active');  countUp(vInTree,  counts.in_tree || 0, 500);
+    cellSemver.classList.add('active');  countUp(vSemver,  counts.semver_admits || 0, 500);
+    cellReach.classList.add('active');   countUp(vReach,   counts.symbol_reachable || 0, 500);
+    cellUnknown.classList.add('active'); countUp(vUnknown, counts.unknown || 0, 500);
+    if ((counts.unknown || 0) === 0 && unknownZeroReason) {
+      unknownInfo.hidden = false;
+      unknownInfo.title = unknownZeroReason;
     } else {
-      cy.add({
-        data: { id, label, version, role, symbol_reachable: reachable,
-                declared_range, evidence: evidence || [], colorClass: cc, statusText: st }
-      });
-      cy.layout({ name: 'cose', animate: true, animationDuration: 600,
-        padding: 60, nodeRepulsion: () => 10000, idealEdgeLength: () => 130, numIter: 600,
-        fit: false }).run();
+      unknownInfo.hidden = true;
     }
   }
 
-  function cyAddEdge(source, target) {
-    const eid = `${source}->${target}`;
-    if (!cy.$(`#${CSS.escape(eid)}`).length) {
-      cy.add({ data: { id: eid, source, target } });
+  // ── Board node/edge helpers ────────────────────────────────
+  function addNode(id, label, version, role) {
+    if (cy.$id(id).nonempty()) return;
+    emptyBoard.style.display = 'none';
+    cy.add({ data: { id, label, version, role, state: role === 'target' || role === 'source' ? 'source' : 'pending', evidence: [], declared_range: '' } });
+    runLayout();
+  }
+
+  // A brief "resolved" flourish on the compromise-source node(s) once an
+  // investigation finishes settling — a soft border pulse, then still.
+  function pulseSourceNodes() {
+    if (reduceMotion) return;
+    const sources = cy.nodes().filter(n => n.data('state') === 'source' || n.data('role') === 'target');
+    sources.forEach(n => {
+      const thick = { style: { 'border-width': 6 } };
+      const thin = { style: { 'border-width': 3 } };
+      n.animate(thick, { duration: 420, easing: 'ease-in-out-sine' })
+        .animate(thin, { duration: 420, easing: 'ease-in-out-sine' })
+        .animate(thick, { duration: 420, easing: 'ease-in-out-sine' })
+        .animate(thin, { duration: 420, easing: 'ease-in-out-sine' });
+    });
+  }
+  function setEdge(from, to, gate, verdict) {
+    const eid = `${from}->${to}`;
+    if (cy.$id(eid).empty()) {
+      cy.add({ data: { id: eid, source: from, target: to, gate, verdict } });
+    } else {
+      cy.$id(eid).data({ gate, verdict });
     }
   }
+  function setStatus(id, state, evidence, declaredRange) {
+    const n = cy.$id(id);
+    if (n.empty()) return;
+    n.removeClass('pending');
+    n.data('state', state);
+    n.data('evidence', evidence || []);
+    if (declaredRange !== undefined) n.data('declared_range', declaredRange);
+  }
+
+  function resetBoard() {
+    cy.elements().remove();
+    emptyBoard.style.display = 'flex';
+    closeDossier();
+  }
+
+  // ── Dossier (evidence modal) ─────────────────────────────────
+  const STAMP_LABEL = { source: 'Compromise source', reachable: 'Reachable', unknown: 'Unknown', safe: 'Filtered out' };
+  let modalTriggerEl = null;
+
+  function openDossier(d, triggerEl) {
+    modalTriggerEl = triggerEl || document.activeElement;
+    dossierName.textContent = d.id;
+    dossierMeta.textContent = `v${d.version || '?'}${d.declared_range ? '  ·  declares: ' + d.declared_range : ''}`;
+    if (d.state && STAMP_LABEL[d.state]) {
+      dossierStamp.hidden = false;
+      dossierStamp.className = `dossier-stamp ${d.state}`;
+      dossierStamp.textContent = STAMP_LABEL[d.state];
+    } else {
+      dossierStamp.hidden = true;
+    }
+    renderExhibits(d.evidence || [], d.state);
+    modalOverlay.hidden = false;
+    requestAnimationFrame(() => {
+      modalOverlay.classList.add('open');
+      dossierModal.focus();
+    });
+    document.addEventListener('keydown', onModalKeydown);
+  }
+
+  function closeDossier() {
+    if (modalOverlay.hidden) return;
+    modalOverlay.classList.remove('open');
+    document.removeEventListener('keydown', onModalKeydown);
+    const finish = () => { modalOverlay.hidden = true; };
+    if (reduceMotion) finish(); else setTimeout(finish, 220);
+    if (modalTriggerEl && document.contains(modalTriggerEl)) modalTriggerEl.focus();
+    modalTriggerEl = null;
+  }
+
+  function onModalKeydown(e) {
+    if (e.key === 'Escape') { e.preventDefault(); closeDossier(); return; }
+    if (e.key !== 'Tab') return;
+    // Focus trap: cycle Tab/Shift+Tab within the modal's focusable elements.
+    const focusables = dossierModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+
+  dossierClose.addEventListener('click', closeDossier);
+  modalOverlay.addEventListener('click', e => { if (e.target === modalOverlay) closeDossier(); });
+
+  // ── Plain-language evidence copy ─────────────────────────────
+  // The gate evidence strings are written to be machine-groupable (L1:/L2:/
+  // L3: prefixes) as well as human-readable — we parse them here just to
+  // pick a plain-English headline; the original strings still render below
+  // as the technical trail, never replaced.
+  const GATE_TITLE = { L1: 'L1 — in the dependency tree', L2: 'L2 — semver admits', L3: 'L3 — symbol reachable', OTHER: 'Notes' };
+
+  function plainL1(lines) {
+    if (!lines.length) return null;
+    const text = lines.join(' ');
+    if (/NOT IN TREE/.test(text)) return { q: 'Is it in the dependency tree?', a: `No — ${text.replace(/^L1:\s*NOT IN TREE\s*—\s*/, '')}` };
+    // Any other L1 line (direct "IN TREE" or a transitive-consumer description)
+    // is an affirmative — it's present in the graph one way or another.
+    return { q: 'Is it in the dependency tree?', a: `Yes — ${text.replace(/^L1:\s*(IN TREE\s*—\s*)?/, '')}` };
+  }
+  function plainL2(lines) {
+    const text = lines.join(' ');
+    if (/ADMITS|INHERITED/.test(text)) return { q: 'Could it have received the compromised version?', a: `Yes — ${text.replace(/^L2:\s*(ADMITS|INHERITED)\s*—?\s*/, '')}` };
+    if (/REJECTS/.test(text)) return { q: 'Could it have received the compromised version?', a: `No — ${text.replace(/^L2:\s*REJECTS\s*—\s*/, '')}` };
+    if (/UNKNOWN/.test(text)) return { q: 'Could it have received the compromised version?', a: `Can't tell — ${text.replace(/^L2:\s*UNKNOWN\s*—\s*/, '')}` };
+    return null;
+  }
+  function plainL3(lines) {
+    const text = lines.join(' ');
+    if (/REACHABLE(?!.*NOT)|UNCONDITIONAL/.test(text) && !/NOT REACHABLE/.test(text)) {
+      return { q: 'Would the malicious code actually run?', a: 'Yes. The compromised code loads the moment the chain above it loads, with no conditions — so anything that reaches this package runs it too.' };
+    }
+    if (/UNKNOWN/.test(text)) {
+      return { q: 'Would the malicious code actually run?', a: "Can't tell — a step in the chain couldn't be statically analysed (see the technical trail below), so this is marked unknown rather than guessed." };
+    }
+    return { q: 'Would the malicious code actually run?', a: 'No — the chain is broken or conditional somewhere before the compromised package, so this was filtered out as not exposed.' };
+  }
+
+  function renderExhibits(evidence, state) {
+    dossierBody.innerHTML = '';
+    if (!evidence.length) {
+      dossierBody.innerHTML = '<div class="dossier-empty">No evidence recorded for this node.</div>';
+      return;
+    }
+    const groups = { L1: [], L2: [], L3: [], OTHER: [] };
+    evidence.forEach(line => {
+      const m = /^L([123])[\s:]/.exec(line);
+      if (m) groups[`L${m[1]}`].push(line); else groups.OTHER.push(line);
+    });
+
+    if (state === 'source') {
+      const p = document.createElement('div'); p.className = 'plain-answer';
+      p.innerHTML = '<div class="q">Why is this the compromise source?</div>'
+        + `<div class="a">${groups.OTHER.map(escapeHtml).join('<br>')}</div>`;
+      dossierBody.appendChild(p);
+    } else {
+      [plainL1(groups.L1), plainL2(groups.L2), plainL3(groups.L3)].forEach(entry => {
+        if (!entry) return;
+        const p = document.createElement('div'); p.className = 'plain-answer';
+        p.innerHTML = `<div class="q">${escapeHtml(entry.q)}</div><div class="a">${escapeHtml(entry.a)}</div>`;
+        dossierBody.appendChild(p);
+      });
+    }
+
+    const trailHeader = document.createElement('div');
+    trailHeader.className = 'tech-trail-toggle';
+    trailHeader.textContent = 'Technical trail';
+    dossierBody.appendChild(trailHeader);
+
+    Object.keys(groups).forEach(k => {
+      if (!groups[k].length) return;
+      const g = document.createElement('div'); g.className = 'exhibit-group';
+      const h = document.createElement('div'); h.className = 'exhibit-gate'; h.textContent = GATE_TITLE[k];
+      g.appendChild(h);
+      groups[k].forEach(line => {
+        const e = document.createElement('div'); e.className = 'exhibit'; e.textContent = line;
+        g.appendChild(e);
+      });
+      dossierBody.appendChild(g);
+    });
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  const delay = ms => new Promise(r => setTimeout(r, reduceMotion ? 0 : ms));
 
   // ══════════════════════════════════════════════════════════
   // REPLAY MODE
   // ══════════════════════════════════════════════════════════
 
   let replayData = null;
+  let replayRunning = false;
 
-  async function loadReplay() {
+  async function loadReplayData() {
     try {
       const res = await fetch('/api/replay/event-stream-2018');
       if (!res.ok) throw new Error(res.statusText);
       replayData = await res.json();
     } catch (e) {
-      documentedImpact.textContent = `ERROR: ${e.message}`;
+      termLine(`Could not load the cached case file: ${e.message}`, 'warn');
       return;
     }
-
-    const href = replayData.historical_reference || {};
-    documentedImpact.textContent = href.documented_impact || '';
-    if (href.source_url) sourceUrlEl.href = href.source_url;
-
-    // Build graph
-    cy.elements().remove();
-    const pkgs = replayData.packages || [];
-    pkgs.forEach(pkg => {
-      cyAddNode(
-        pkg.name,
-        (pkg.role === 'compromise_source' ? '⚠ ' : '') + pkg.name + '\nv' + pkg.version,
-        pkg.version, pkg.role, pkg.symbol_reachable, pkg.evidence, pkg.declared_range
-      );
-    });
-    pkgs.forEach(pkg => {
-      if (pkg.name === 'event-stream') cyAddEdge('event-stream', 'flatmap-stream');
-      else if (pkg.name !== 'flatmap-stream') cyAddEdge(pkg.name, 'event-stream');
-    });
-    cy.layout({ name: 'cose', animate: true, padding: 60,
-      nodeRepulsion: () => 12000, idealEdgeLength: () => 140, numIter: 1000 }).run();
+    footnoteText.textContent = (replayData.historical_reference || {}).documented_impact || '';
+    if (replayData.historical_reference && replayData.historical_reference.source_url) {
+      footnoteLink.href = replayData.historical_reference.source_url;
+    }
   }
 
-  btnCompromise.addEventListener('click', async () => {
-    if (!replayData) return;
-    btnCompromise.disabled = true;
-    resetCounters();
-    cy.edges().removeClass('ripple');
+  async function playReplay() {
+    if (!replayData || replayRunning) return;
+    replayRunning = true;
+    btnRunReplay.disabled = true;
+    document.body.classList.add('is-scanning');
+    clearTranscript();
+    resetBoard();
+    resetFunnel();
 
-    const fmNode = cy.$('#flatmap-stream');
-    if (fmNode.length) {
-      fmNode.animate({ style: { width: 120, height: 120 }}, { duration: 300 })
-            .animate({ style: { width: 94,  height: 94  }}, { duration: 300 });
+    const pkgs = replayData.packages || [];
+    const byName = Object.fromEntries(pkgs.map(p => [p.name, p]));
+
+    termLine('Opening cached case file: event-stream@3.3.6 (npm, Nov 2018).', 'ok');
+    await delay(150);
+
+    // Sources first
+    for (const src of pkgs.filter(p => p.role === 'compromise_source')) {
+      termLine(`Source: ${src.name}@${src.version} — ${src.evidence[0] || 'compromise source'}`, 'risk');
+      addNode(src.name, `${src.name}\nv${src.version}`, src.version, 'source');
+      setStatus(src.name, 'source', src.evidence, src.declared_range);
+      await delay(180);
     }
-    await delay(350);
+    setEdge('event-stream', 'flatmap-stream', 'L3', 'reachable');
 
-    const consumers = (replayData.packages || []).filter(p => p.role !== 'compromise_source');
-    const inTree       = consumers.filter(p => p.in_tree).length;
-    const semverAdmits = consumers.filter(p => p.in_tree && p.semver_admits === true).length;
-    const reachable    = consumers.filter(p => p.symbol_reachable === true).length;
+    const consumers = pkgs.filter(p => p.role !== 'compromise_source');
+    termLine(`Walking the dependency graph for ${consumers.length} known consumers…`, 'info');
+    await delay(220);
 
-    statInTree.classList.add('active'); countUp(valInTree, inTree, 600);
-    await delay(400); cy.edges().addClass('ripple');
-    await delay(800); statSemVer.classList.add('active'); countUp(valSemVer, semverAdmits, 600);
-    await delay(900); statSymbol.classList.add('active'); countUp(valSymbol, reachable, 600);
-    await delay(700);
-    btnCompromise.disabled = false;
-  });
+    let inTree = 0, semverAdmits = 0, reachable = 0, unknown = 0;
+
+    for (const c of consumers) {
+      termLine(`Resolving ${c.name}@${c.version}…`, 'info');
+      addNode(c.name, `${c.name}\nv${c.version}`, c.version, 'consumer');
+      // A transitive consumer's real edge is to its intermediate (e.g.
+      // nodemon -> ps-tree), not straight to event-stream — that misrepresents
+      // the actual path the malicious code would travel.
+      const edgeTarget = c.transitive_via ? c.transitive_via.name : 'event-stream';
+      if (c.transitive_via) addNode(c.transitive_via.name, `${c.transitive_via.name}\nv${c.transitive_via.version}`, c.transitive_via.version, 'consumer');
+      setEdge(c.name, edgeTarget, 'L1', c.in_tree ? 'in_tree' : 'not_declared');
+      await delay(160);
+
+      if (c.in_tree) inTree += 1;
+      const l2 = c.semver_admits === true ? 'ADMITS' : c.semver_admits === false ? 'REJECTS' : 'UNKNOWN';
+      if (c.transitive_via) {
+        termLine(
+          `  L2 — inherited: ${c.declared_range.replace(/^TRANSITIVE via /, '')} declares '~3.3.0', `
+          + `which ${l2} event-stream@3.3.6.`,
+          c.semver_admits ? 'risk' : 'info',
+        );
+      } else {
+        termLine(`  L2 — declared range "${c.declared_range}" ${l2} event-stream@3.3.6.`, c.semver_admits ? 'risk' : 'info');
+      }
+      if (c.semver_admits === true) { semverAdmits += 1; setEdge(c.name, edgeTarget, 'L2', 'admits'); }
+      else if (c.semver_admits === false) setEdge(c.name, edgeTarget, 'L2', 'rejects');
+      await delay(160);
+
+      let state;
+      const chainNote = c.transitive_via ? ` chain walk: ${c.name} → ${c.transitive_via.name} → event-stream → flatmap-stream.` : '';
+      if (c.symbol_reachable === true) { state = 'reachable'; reachable += 1; setEdge(c.name, edgeTarget, 'L3', 'reachable');
+        termLine(`  L3 —${chainNote} All hops unconditional. REACHABLE.`, 'risk'); }
+      else if (c.symbol_reachable === null) { state = 'unknown'; unknown += 1; setEdge(c.name, edgeTarget, 'L3', 'unknown');
+        termLine(`  L3 —${chainNote} A hop could not be statically determined. UNKNOWN.`, 'warn'); }
+      else { state = 'safe'; setEdge(c.name, edgeTarget, 'L3', 'safe');
+        termLine(`  L3 —${chainNote} Not reachable. Filtered out.`, 'ok'); }
+      setStatus(c.name, state, c.evidence, c.declared_range);
+      await delay(220);
+    }
+
+    termLine(`Investigation complete. In tree ${inTree} · Admits ${semverAdmits} · Reachable ${reachable} · Unknown ${unknown}.`, 'ok');
+    if (unknown === 0) {
+      termLine(
+        'Unknown 0 — every hop in this case is documented in npm’s postmortem, so no hop required a guess. '
+        + 'That will not hold for most packages: try Live Scan.',
+        'muted',
+      );
+    }
+    setFunnel(
+      { in_tree: inTree, semver_admits: semverAdmits, symbol_reachable: reachable, unknown },
+      'Every hop in this documented incident is confirmed in npm’s postmortem — none required a guess. Live Scan will show real unknowns.',
+    );
+    pulseSourceNodes();
+
+    replayRunning = false;
+    btnRunReplay.disabled = false;
+    document.body.classList.remove('is-scanning');
+  }
+
+  btnRunReplay.addEventListener('click', playReplay);
 
   // ══════════════════════════════════════════════════════════
   // LIVE SCAN MODE
   // ══════════════════════════════════════════════════════════
 
-  let currentEventSource = null;
+  let currentSource = null;
 
-  function termLine(text, cls = 'info') {
-    const line = document.createElement('div');
-    line.className = `term-line ${cls}`;
-    line.textContent = text;
-    terminalBody.appendChild(line);
-    terminalBody.scrollTop = terminalBody.scrollHeight;
+  function closeLiveStream() {
+    if (currentSource) { currentSource.close(); currentSource = null; }
+    btnScan.disabled = false;
+    document.body.classList.remove('is-scanning');
+    pulseSourceNodes();
   }
 
-  function clearTerminal() {
-    terminalBody.innerHTML = '';
+  function offerSimulate(pkgName) {
+    const wrap = document.createElement('div');
+    wrap.className = 'simulate-offer';
+    wrap.innerHTML = `<p>No known vulnerabilities for <strong>${pkgName}</strong>. Simulate a hypothetical compromise to see the blast radius?</p>`;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-risk btn-sm';
+    btn.textContent = 'Simulate compromise';
+    btn.addEventListener('click', () => { wrap.remove(); startLiveScan(pkgName, 'simulate'); });
+    wrap.appendChild(btn);
+    transcript.appendChild(wrap);
+    if (!userScrolledUp) transcript.scrollTop = transcript.scrollHeight;
   }
 
-  function startLiveScan(pkgName) {
-    if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+  function startLiveScan(pkgName, mode) {
+    closeLiveStream();
+    clearTranscript();
+    resetBoard();
+    resetFunnel();
+    btnScan.disabled = true;
+    document.body.classList.add('is-scanning');
 
-    clearTerminal();
-    termLine(`$ ripple scan ${pkgName}`, 'ok');
-    cy.elements().remove();
-    resetCounters();
+    caseSubject.textContent = mode === 'simulate' ? `${pkgName} (simulated)` : pkgName;
+    caseSubject.className = mode === 'simulate' ? 'v sim' : 'v';
 
-    incidentBadge.textContent = `live scan: ${pkgName}`;
-    incidentBadge.style.background = 'rgba(16,185,129,.12)';
-    incidentBadge.style.color = '#6ee7b7';
-    incidentBadge.style.borderColor = 'rgba(16,185,129,.25)';
+    termLine(`$ ripple investigate ${pkgName}${mode === 'simulate' ? ' --simulate' : ''}`, 'ok');
 
-    const url = `/api/scan/stream?package=${encodeURIComponent(pkgName)}`;
+    const cap = capInput.value || 25;
+    const url = `/api/scan/stream?package=${encodeURIComponent(pkgName)}&mode=${mode}&limit=${cap}`;
     const es = new EventSource(url);
-    currentEventSource = es;
+    currentSource = es;
 
     es.addEventListener('log', e => {
       const d = JSON.parse(e.data);
-      const levelMap = { info: 'info', ok: 'ok', warn: 'warn', danger: 'danger', error: 'error' };
-      termLine(d.message, levelMap[d.level] || 'info');
+      termLine(d.text, d.level || 'info');
     });
 
     es.addEventListener('node', e => {
       const d = JSON.parse(e.data);
-      cyAddNode(d.id, d.label, d.version, d.role || 'consumer', null, [], '');
-      // Add edge immediately if it's a consumer (they connect to the target)
+      addNode(d.id, d.label, d.version, d.role);
     });
 
     es.addEventListener('edge', e => {
       const d = JSON.parse(e.data);
-      cyAddEdge(d.source, d.target);
+      setEdge(d.from, d.to, d.gate, d.verdict);
     });
 
     es.addEventListener('status', e => {
       const d = JSON.parse(e.data);
-      const existing = cy.$(`#${CSS.escape(d.id)}`);
-      if (existing.length) {
-        const cc = colorClass('consumer', d.reachable);
-        const st = statusText('consumer', d.reachable);
-        existing.data({ colorClass: cc, statusText: st, symbol_reachable: d.reachable, evidence: d.evidence || [] });
-      }
+      const node = cy.$id(d.id);
+      const declaredRange = node.nonempty() ? node.data('declared_range') : '';
+      setStatus(d.id, d.state, d.evidence, declaredRange);
     });
 
     es.addEventListener('final', e => {
       const d = JSON.parse(e.data);
-      if (d.counts) {
-        activateCounters(d.counts.in_tree, d.counts.semver_admits, d.counts.symbol_reachable);
+      if (d.error) {
+        termLine(`Stopped: ${d.error}`, 'warn');
+      } else if (d.no_advisories) {
+        offerSimulate(d.package);
+      } else if (d.counts) {
+        setFunnel(d.counts);
+        // backfill declared_range onto nodes from the final package list, for the dossier
+        (d.packages || []).forEach(p => {
+          const n = cy.$id(p.name);
+          if (n.nonempty() && p.declared_range) n.data('declared_range', p.declared_range);
+        });
       }
-      termLine('─────────────────────────────────────────────', 'muted');
-      termLine(`Done. In tree: ${d.counts?.in_tree ?? '?'}  Semver admits: ${d.counts?.semver_admits ?? '?'}  Reachable: ${d.counts?.symbol_reachable ?? '?'}  Unknown: ${d.counts?.unknown ?? '?'}`, 'ok');
-      es.close();
-      currentEventSource = null;
-      btnScan.disabled = false;
-    });
-
-    es.addEventListener('error', e => {
-      if (e.data) {
-        const d = JSON.parse(e.data);
-        termLine(`ERROR: ${d.message}`, 'error');
-      } else {
-        termLine('Connection error or stream ended.', 'warn');
-      }
-      es.close();
-      currentEventSource = null;
-      btnScan.disabled = false;
+      closeLiveStream();
     });
 
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
-        termLine('Stream closed.', 'muted');
-        btnScan.disabled = false;
+        termLine('Connection closed.', 'muted');
+        closeLiveStream();
       }
     };
   }
 
-  btnScan.addEventListener('click', () => {
+  scanForm.addEventListener('submit', e => {
+    e.preventDefault();
     const pkg = scanInput.value.trim();
     if (!pkg) return;
-    btnScan.disabled = true;
-    startLiveScan(pkg);
-  });
-
-  scanInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') btnScan.click();
+    startLiveScan(pkg, 'real');
   });
 
   // ══════════════════════════════════════════════════════════
   // MODE SWITCHING
   // ══════════════════════════════════════════════════════════
 
+  const mainStack = document.querySelector('.main-stack');
+
+  function activateTab(tab) {
+    [tabReplay, tabLive].forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+  }
+
+  // A short cross-fade so the mode switch reads as a deliberate transition,
+  // not an instant swap. Reduced-motion viewers get the end state directly.
+  function withModeFade(applyChanges) {
+    if (reduceMotion) { applyChanges(); return; }
+    mainStack.classList.add('mode-switching');
+    setTimeout(() => {
+      applyChanges();
+      requestAnimationFrame(() => mainStack.classList.remove('mode-switching'));
+    }, 160);
+  }
+
   function switchToReplay() {
-    btnModeReplay.classList.add('active');
-    btnModeLive.classList.remove('active');
-    btnCompromise.style.display = '';
-    liveControls.style.display = 'none';
-    terminalPane.style.display = 'none';
-    incidentBadge.textContent = 'event-stream · Nov 2018';
-    incidentBadge.style.cssText = '';
-    if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
-    loadReplay();
+    activateTab(tabReplay);
+    withModeFade(() => {
+      controlsReplay.style.display = '';
+      controlsLive.style.display = 'none';
+      closeLiveStream();
+      caseSubject.textContent = 'event-stream@3.3.6';
+      caseSubject.className = 'v';
+      footnoteLink.href = 'https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident';
+      footnoteLink.textContent = "npm's incident write-up";
+      resetBoard();
+      resetFunnel();
+      clearTranscript();
+      playReplay();
+    });
   }
 
   function switchToLive() {
-    btnModeLive.classList.add('active');
-    btnModeReplay.classList.remove('active');
-    btnCompromise.style.display = 'none';
-    liveControls.style.display = '';
-    terminalPane.style.display = 'flex';
-    cy.elements().remove();
-    resetCounters();
-    documentedImpact.textContent =
-      'Live Scan mode — type any npm package name above to discover its real dependents and check reachability via OSV.dev, npm registry, and deps.dev.';
-    sourceUrlEl.href = '#';
-    sourceUrlEl.textContent = 'npm registry →';
-    sourceUrlEl.href = 'https://www.npmjs.com';
+    activateTab(tabLive);
+    withModeFade(() => {
+      controlsReplay.style.display = 'none';
+      controlsLive.style.display = '';
+      resetBoard();
+      resetFunnel();
+      clearTranscript();
+      caseSubject.textContent = '—';
+      termLine('Enter an npm package name above and press Investigate.', 'muted');
+      footnoteText.textContent = 'Live scan queries the real npm registry, OSV.dev and ecosyste.ms — nothing here is pre-scripted.';
+      footnoteLink.href = 'https://osv.dev';
+      footnoteLink.textContent = 'about OSV.dev';
+      scanInput.focus();
+    });
   }
 
-  btnModeReplay.addEventListener('click', switchToReplay);
-  btnModeLive.addEventListener('click', switchToLive);
+  tabReplay.addEventListener('click', switchToReplay);
+  tabLive.addEventListener('click', switchToLive);
 
-  // ── Boot: load Replay Mode ────────────────────────────────
-  await loadReplay();
+  // ── Boot ───────────────────────────────────────────────────
+  (async () => {
+    await loadReplayData();
+    await playReplay();
+  })();
 });

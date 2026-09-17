@@ -67,12 +67,19 @@
     "role": "consumer",
     "in_tree": true,
     "declared_range": "TRANSITIVE via ps-tree@^1.1.0",
-    "semver_admits": null,
-    "symbol_reachable": false,
+    "semver_admits": true,
+    "symbol_reachable": true,
     "evidence": [
-      "L1: nodemon@1.12.5 is present in the event-stream dependency graph as a consumer (depends on event-stream).",
-      "L2: N/A \u2014 nodemon has no direct event-stream dependency. It resolves event-stream transitively via ps-tree@^1.1.0, which declares event-stream ~3.3.0 (ADMITS 3.3.6).",
-      "L3: Not reachable \u2014 transitive consumer does not directly require event-stream. The malicious code would only execute if this package's dependencies are installed and event-stream is loaded by one of them (ps-tree here). This package itself does not trigger the chain."
-    ]
+      "L1: nodemon@1.12.5 is present in the event-stream dependency graph as a transitive consumer \u2014 it depends on ps-tree@1.1.0, which is the package that actually declares event-stream.",
+      "L2: INHERITED \u2014 nodemon declares no direct range on event-stream; it resolves it transitively via ps-tree@^1.1.0, which declares '~3.3.0'. That range ADMITS event-stream@3.3.6, so the verdict is inherited down the chain to nodemon.",
+      "L3 CHAIN WALK: REACHABLE",
+      "HOP nodemon@1.12.5 -> ps-tree: UNCONDITIONAL \u2014 package/lib/monitor/run.js: line 13: `var psTree = require('ps-tree');` (appears before first control-flow at line 24)",
+      "HOP ps-tree@1.1.0 -> event-stream: UNCONDITIONAL \u2014 package/index.js: line 4: `es    = require('event-stream');` (appears before first control-flow at line 97)",
+      "HOP event-stream@3.3.6 -> flatmap-stream: DOCUMENTED UNCONDITIONAL \u2014 npm postmortem confirms event-stream@3.3.6 added require('flatmap-stream') unconditionally to its index.js. Source: https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident"
+    ],
+    "transitive_via": {
+      "name": "ps-tree",
+      "version": "1.1.0"
+    }
   }
 ]

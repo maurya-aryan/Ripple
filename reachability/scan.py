@@ -52,24 +52,34 @@ def analyse_consumer(pkg):
     name = pkg["name"]
     version = pkg["version"]
     declared_range = pkg.get("declared_range", "")
+    transitive_via = pkg.get("transitive_via")
 
-    # Build the chain hops for this consumer
-    if declared_range.startswith("TRANSITIVE"):
-        # Transitive consumer (e.g. nodemon via ps-tree): doesn't directly require event-stream
-        # We check if it requires the intermediate (ps-tree), and ps-tree is already confirmed reachable
-        # For now: mark as NOT_REACHABLE — the package itself doesn't load event-stream
+    # Build the chain hops for this consumer. A transitive consumer (e.g.
+    # nodemon, which has no direct event-stream dependency but pulls it in
+    # via ps-tree) is NOT evaluated as a single hop to event-stream — its
+    # real path is consumer -> intermediate -> event-stream -> flatmap-stream,
+    # and every hop in that path must be walked. Treating "no direct
+    # dependency" as "not reachable" was the bug: N/A at one hop must
+    # propagate the walk forward, never resolve to a negative on its own.
+    if declared_range.startswith("TRANSITIVE") and transitive_via:
+        mid_name = transitive_via["name"]
+        mid_version = transitive_via["version"]
+        chain_hops = [
+            (name, version, mid_name),
+            (mid_name, mid_version, "event-stream"),
+        ] + CHAIN_TEMPLATE
+    elif declared_range.startswith("TRANSITIVE"):
+        # Declared transitive but no intermediate on record — genuinely can't walk it.
         return (
-            False,
+            None,
             [
-                "L3: Not reachable — transitive consumer does not directly require event-stream. "
-                "The malicious code would only execute if this package's dependencies are installed "
-                "and event-stream is loaded by one of them (ps-tree here). "
-                "This package itself does not trigger the chain."
+                "L3: UNKNOWN — this consumer resolves event-stream transitively, "
+                "but no intermediate package is on record to walk the chain through."
             ],
         )
-
-    # Build hops: [consumer -> event-stream, event-stream@3.3.6 -> flatmap-stream]
-    chain_hops = [(name, version, "event-stream")] + CHAIN_TEMPLATE
+    else:
+        # Build hops: [consumer -> event-stream, event-stream@3.3.6 -> flatmap-stream]
+        chain_hops = [(name, version, "event-stream")] + CHAIN_TEMPLATE
 
     result, evidence = walk_chain(TARBALL_DIR, chain_hops, documented_hops=DOCUMENTED_HOPS)
 

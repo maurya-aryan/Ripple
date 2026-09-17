@@ -50,6 +50,29 @@ def _any_ref_pattern(package_name):
     )
 
 
+def _find_first_real_block_open(content):
+    """
+    Returns the match object for the first control-flow/function-definition
+    construct that actually OPENS a multi-line block — skipping one-liners
+    like `var noop = function () { };` whose braces balance on the same
+    line and therefore never push later top-level code into conditional
+    scope. Without this, a harmless one-line no-op earlier in the file
+    would falsely flag every later top-level require as "conditional".
+    """
+    lines = content.splitlines(keepends=True)
+    for m in _CONTROL_FLOW_RE.finditer(content):
+        line_no = content[:m.start()].count('\n')  # 0-indexed
+        line = lines[line_no] if line_no < len(lines) else ''
+        # From the construct onward on its own line, do the braces balance?
+        # A `try {` with no closing `}` on the same line truly opens a block;
+        # `function () { };` (or similar) that closes on the same line does not.
+        rest_of_line = line[m.start() - sum(len(l) for l in lines[:line_no]):]
+        if rest_of_line.count('{') > 0 and rest_of_line.count('{') == rest_of_line.count('}'):
+            continue  # self-contained one-liner — not a real block open
+        return m
+    return None
+
+
 def _is_require_before_control_flow(content, package_name):
     """
     Returns True if any require(package_name) appears before the first
@@ -65,7 +88,7 @@ def _is_require_before_control_flow(content, package_name):
     ref_pos = ref_match.start()
     ref_line = content[:ref_pos].count('\n') + 1
 
-    cf_match = _CONTROL_FLOW_RE.search(content)
+    cf_match = _find_first_real_block_open(content)
     if not cf_match:
         # No control flow at all — require must be top-level
         snippet = content.splitlines()[ref_line - 1].strip()[:80]

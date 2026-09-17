@@ -2,123 +2,125 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RIPPLE — Supply-Chain Reachability</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>RIPPLE — Reachability Case File</title>
   <link rel="stylesheet" href="styles.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 </head>
 <body>
-  <!-- ── HEADER ────────────────────────────────────────────── -->
-  <header class="navbar">
-    <div class="brand">
-      <div class="brand-icon">R</div>
-      <div class="brand-title">RIPPLE</div>
-      <span class="badge-incident" id="incident-badge">event-stream · Nov 2018</span>
-    </div>
 
-    <!-- Mode Toggle -->
-    <div class="mode-toggle" id="mode-toggle">
-      <button class="mode-btn active" id="btn-mode-replay" data-mode="replay">
-        ⏪ Replay: Event-Stream 2018
-      </button>
-      <button class="mode-btn" id="btn-mode-live" data-mode="live">
-        ⚡ Live Scan: Any Package
-      </button>
-    </div>
-
-    <!-- Funnel Counters -->
-    <div class="controls-bar">
-      <div class="funnel-stats">
-        <div class="stat-item" id="stat-intree">
-          <span class="stat-label">In Tree</span>
-          <span class="stat-value" id="val-intree">—</span>
+  <!-- ── MASTHEAD ──────────────────────────────────────────────── -->
+  <header class="masthead">
+    <div class="masthead-row">
+      <div class="masthead-block">
+        <div class="wordmark">RIPPLE<small>reachability, not just presence</small></div>
+        <div class="case-tag">
+          <span class="k">Subject</span>
+          <span class="v" id="case-subject">event-stream@3.3.6</span>
         </div>
-        <span class="stat-arrow">→</span>
-        <div class="stat-item" id="stat-semver">
-          <span class="stat-label">Semver Admits</span>
-          <span class="stat-value" id="val-semver">—</span>
-        </div>
-        <span class="stat-arrow">→</span>
-        <div class="stat-item" id="stat-symbol">
-          <span class="stat-label">Reachable</span>
-          <span class="stat-value" id="val-symbol">—</span>
-        </div>
+        <span class="scan-pulse" id="scan-pulse" aria-hidden="true"><span class="dot"></span>investigating</span>
       </div>
 
-      <!-- Replay Mode: Compromise button -->
-      <button class="btn-primary" id="btn-compromise">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-        </svg>
-        Compromise flatmap-stream
-      </button>
-
-      <!-- Live Mode: Scan input -->
-      <div class="live-controls" id="live-controls" style="display:none;">
-        <div class="scan-input-wrap">
-          <span class="scan-prompt">$</span>
-          <input type="text" id="scan-input" class="scan-input" placeholder="scan express" autocomplete="off" spellcheck="false">
-        </div>
-        <button class="btn-primary" id="btn-scan">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-          Scan
-        </button>
+      <div class="funnel" id="funnel">
+        <div class="funnel-cell" id="cell-intree"><span class="k">In tree</span><span class="v" id="v-intree">—</span></div>
+        <span class="funnel-arrow">→</span>
+        <div class="funnel-cell" id="cell-semver"><span class="k">Admits</span><span class="v" id="v-semver">—</span></div>
+        <span class="funnel-arrow">→</span>
+        <div class="funnel-cell" id="cell-reach"><span class="k">Reachable</span><span class="v" id="v-reach">—</span></div>
+        <span class="funnel-arrow">→</span>
+        <div class="funnel-cell" id="cell-unknown"><span class="k">Unknown <span class="info-dot" id="unknown-info" hidden tabindex="0" aria-label="Why zero?">i</span></span><span class="v" id="v-unknown">—</span></div>
       </div>
     </div>
+
+    <nav class="mode-tabs" id="mode-tabs" aria-label="Investigation mode">
+      <button class="mode-tab active" id="tab-replay" data-mode="replay">Replay a real incident</button>
+      <button class="mode-tab" id="tab-live" data-mode="live">Scan any package</button>
+    </nav>
   </header>
 
-  <!-- ── MAIN ──────────────────────────────────────────────── -->
-  <div class="main-container">
+  <!-- ── MAIN STACK: terminal above, graph below ──────────────────── -->
+  <div class="main-stack">
 
-    <!-- Graph Panel -->
-    <div class="graph-pane" id="graph-pane">
-      <div id="cy"></div>
+    <!-- TERMINAL -->
+    <section class="terminal">
+      <div class="terminal-controls" id="controls-replay">
+        <span class="field-label">Case</span>
+        <span style="font-family:var(--font-mono); font-size:12.5px; color:var(--ink-soft);">
+          event-stream@3.3.6 → flatmap-stream@0.1.1 · npm, Nov 2018 · replayed from cached evidence, no network
+        </span>
+        <button class="btn btn-risk" id="btn-run-replay" style="margin-left:auto;">Re-run investigation</button>
+      </div>
 
-      <!-- Legend Overlay -->
-      <div class="legend-box">
-        <div class="legend-title">Node Classification</div>
-        <div class="legend-item"><span class="dot source"></span> Compromise Source / Target</div>
-        <div class="legend-item"><span class="dot red"></span> Reachable (Exposed)</div>
-        <div class="legend-item"><span class="dot amber"></span> UNKNOWN (Unanalysable)</div>
-        <div class="legend-item"><span class="dot green"></span> Not Reachable (Safe)</div>
+      <div class="terminal-controls" id="controls-live" style="display:none;">
+        <span class="field-label">Package</span>
+        <form class="scan-form" id="scan-form">
+          <div class="scan-input-wrap">
+            <span class="caret">›</span>
+            <input type="text" id="scan-input" class="scan-input" placeholder="e.g. express, chalk, @babel/core" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="cap-select">
+            <label for="cap-input">cap</label>
+            <select id="cap-input">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+            </select>
+          </div>
+          <button class="btn" type="submit" id="btn-scan">Investigate</button>
+        </form>
       </div>
-    </div>
 
-    <!-- Terminal Panel (Live mode only) -->
-    <div class="terminal-pane" id="terminal-pane" style="display:none;">
-      <div class="terminal-header">
-        <span class="term-dot red-dot"></span><span class="term-dot amber-dot"></span><span class="term-dot green-dot"></span>
-        <span class="term-title">ripple live-scan</span>
+      <div class="transcript" id="transcript" role="log" aria-live="polite">
+        <div class="transcript-line muted"><span class="no"></span><span class="tx">Ready. Loading the event-stream 2018 case file…</span></div>
       </div>
-      <div class="terminal-body" id="terminal-body">
-        <div class="term-line muted">Ready. Enter a package name and press Scan.</div>
-      </div>
-    </div>
+    </section>
 
-    <!-- Side Evidence Panel -->
-    <div class="side-panel" id="side-panel">
-      <div class="panel-header">
-        <h3 class="panel-title" id="panel-pkg-name">Select a Node</h3>
-        <div class="panel-subtitle" id="panel-pkg-version">Click any package node to inspect evidence</div>
+    <!-- EVIDENCE BOARD -->
+    <section class="board-wrap">
+      <div id="cy" tabindex="0" aria-label="Dependency graph"></div>
+
+      <div class="empty-board" id="empty-board">
+        <div class="empty-board-card">
+          <strong>No investigation running</strong>
+          Switch to Live scan and enter a package name to map who can actually execute its code —
+          not just who lists it as a dependency.
+        </div>
       </div>
-      <div class="status-badge-wrap">
-        <span class="status-badge" id="panel-status-badge" style="display:none;"></span>
+
+      <div class="legend">
+        <div class="legend-title">Board key</div>
+        <div class="legend-row"><span class="swatch source"></span> Compromise source</div>
+        <div class="legend-row"><span class="swatch reachable"></span> Reachable — code executes</div>
+        <div class="legend-row"><span class="swatch unknown"></span> Unknown — can't be proven either way</div>
+        <div class="legend-row"><span class="swatch safe"></span> Filtered out — never exposed</div>
       </div>
-      <div class="evidence-header">Evaluation Evidence (L1 → L2 → L3)</div>
-      <div class="evidence-list" id="panel-evidence-list">
-        <div class="evidence-card muted">No package selected. Click a node to view evidence.</div>
+    </section>
+  </div>
+
+  <!-- ── EVIDENCE MODAL ────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal" id="dossier-modal" role="dialog" aria-modal="true" aria-labelledby="dossier-name" tabindex="-1">
+      <button class="modal-close" id="dossier-close" aria-label="Close evidence file">✕</button>
+      <div class="modal-head">
+        <div class="dossier-name" id="dossier-name">—</div>
+        <div class="dossier-meta" id="dossier-meta">—</div>
+        <span class="dossier-stamp" id="dossier-stamp" hidden></span>
+      </div>
+      <div class="modal-body" id="dossier-body">
+        <div class="dossier-empty">Click a node on the board to open its file.</div>
       </div>
     </div>
   </div>
 
-  <!-- ── FOOTER ─────────────────────────────────────────────── -->
-  <footer class="footer-strip">
-    <div class="footer-impact" id="footer-impact">
-      <span class="footer-icon">⚠</span>
-      <span id="documented-impact">Loading…</span>
-    </div>
-    <a id="source-url" href="https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident"
-       target="_blank" rel="noopener" class="footer-link">npm incident writeup →</a>
+  <!-- ── FOOTER ─────────────────────────────────────────────────── -->
+  <footer class="footnote">
+    <p id="footnote-text">Loading case notes…</p>
+    <p class="footnote-scope">
+      Scope: npm only. L1 (dependency graph) and L2 (version ranges) are already
+      ecosystem-agnostic — deps.dev and OSV.dev both cover PyPI, Maven and others too.
+      Only L3 is npm-specific, since it needs a per-language import scanner.
+    </p>
+    <a id="footnote-link" href="https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident" target="_blank" rel="noopener">npm's incident write-up</a>
   </footer>
 
   <script src="app.js"></script>

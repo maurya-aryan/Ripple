@@ -3,29 +3,42 @@ server.py — RIPPLE FastAPI backend.
 
 Serves:
   GET /                              → index.html (static)
-  GET /api/replay/event-stream-2018  → static funnel_result.json
-  GET /api/scan/stream?package=NAME  → Server-Sent Events live scan
+  GET /api/replay/event-stream-2018  → static funnel_result.json (no network — guaranteed demo path)
+  GET /api/scan/stream?package=NAME  → Server-Sent Events live scan (real npm/OSV.dev/ecosyste.ms data)
 
 Run with:
   uvicorn server:app --port 8000 --reload
+
+── Data sources for live scan ──────────────────────────────────────────────
+  registry.npmjs.org   resolve packages, read manifests (dependencies + dist.tarball)
+  api.osv.dev           real vulnerability advisories + affected version ranges
+  packages.ecosyste.ms  the *list* of real dependent packages
+
+Why ecosyste.ms and not deps.dev for the dependents list: deps.dev's
+GetDependents (`:dependents`) endpoint only returns aggregate counts
+(dependentCount / directDependentCount / indirectDependentCount) — confirmed
+against the published API reference at https://docs.deps.dev/api/v3alpha/ —
+it does not return the package list itself. We still call it for a
+cross-referenced total, but the actual capped list of real dependents (used
+to drive L1/L2/L3) comes from ecosyste.ms's dependent_packages endpoint,
+which does return real package names. Sorting by `downloads` is required:
+without a sort param, ecosyste.ms's query times out for very popular
+packages (verified against chalk/debug/express during development).
 """
 
 import asyncio
 import json
-import os
 import re
-import sys
-import tarfile
-import urllib.request
+import urllib.parse
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
+import httpx
 from fastapi import FastAPI, Query
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-import httpx
 
-from reachability.chain_walk import walk_chain, check_hop
+from reachability.chain_walk import check_hop
 
 # ──────────────────────────────────────────────────────────────
 app = FastAPI(title="RIPPLE API")
@@ -35,62 +48,138 @@ DATA_DIR = BASE_DIR / "data"
 TARBALL_DIR = DATA_DIR / "tarballs"
 TARBALL_DIR.mkdir(parents=True, exist_ok=True)
 
+NPM_REGISTRY = "https://registry.npmjs.org"
+OSV_URL = "https://api.osv.dev/v1/query"
+DEPS_DEV = "https://api.deps.dev/v3alpha"
+ECOSYSTEMS = "https://packages.ecosyste.ms/api/v1/registries/npmjs.org/packages"
+
+DEFAULT_CAP = 25
+MAX_CAP = 50
+
+
 # ──────────────────────────────────────────────────────────────
-# Helpers: semver (reused from build_data.py)
+# semver: minimal pure-Python range matcher.
+# Supports: ^, ~, exact, X.Y.x, comparators (>=,<=,>,<,=), space-separated
+# AND ranges (e.g. ">=1.0.0 <1.2.6", the shape OSV.dev ranges normalize to),
+# and "||" OR ranges. Returns True/False, or None when the range can't be
+# parsed at all — that None must surface as UNKNOWN, never as a silent False.
 # ──────────────────────────────────────────────────────────────
 
-def _parse_version(v):
+def _parse_version(v: str):
     clean = re.sub(r"[^0-9.]", "", v.split("-")[0])
     parts = (clean + ".0.0").split(".")[:3]
     try:
         return tuple(int(x) for x in parts)
     except ValueError:
-        return (0, 0, 0)
+        return None
 
 
-def semver_satisfies(range_str, target_version):
+def semver_satisfies(range_str: str, target_version: str) -> Optional[bool]:
     target = _parse_version(target_version)
-    range_str = range_str.strip()
-    if range_str in ("latest", "*", ""):
+    if target is None:
+        return None
+    range_str = (range_str or "").strip()
+    if range_str in ("latest", "*", "", "x"):
         return True
+    # Non-semver dependency specs (git urls, workspace refs, file paths, tags)
+    if re.search(r"(git\+|github:|file:|workspace:|http:|https:|^[a-zA-Z][\w-]*$)", range_str) and not re.match(r"^[\^~=]?\d", range_str):
+        return None
     if "||" in range_str:
-        return any(semver_satisfies(r.strip(), target_version) for r in range_str.split("||"))
+        results = [semver_satisfies(r.strip(), target_version) for r in range_str.split("||")]
+        if any(r is True for r in results):
+            return True
+        if all(r is False for r in results):
+            return False
+        return None
+
     parts = range_str.split()
     if len(parts) > 1 and not range_str.startswith("^") and not range_str.startswith("~"):
-        return all(semver_satisfies(p, target_version) for p in parts)
-    m = re.match(r"^\^(\d+)\.(\d+)\.(\d+)$", range_str)
+        results = [semver_satisfies(p, target_version) for p in parts]
+        if any(r is None for r in results):
+            return None
+        return all(results)
+
+    m = re.match(r"^\^(\d+)\.(\d+)\.(\d+)", range_str)
     if m:
-        lo = tuple(int(x) for x in m.groups()); hi = (lo[0] + 1, 0, 0)
+        lo = tuple(int(x) for x in m.groups())
+        hi = (lo[0] + 1, 0, 0) if lo[0] > 0 else ((0, lo[1] + 1, 0) if lo[1] > 0 else (0, 0, lo[2] + 1))
         return lo <= target < hi
     m = re.match(r"^\^(\d+)\.(\d+)$", range_str)
     if m:
-        lo = (int(m.group(1)), int(m.group(2)), 0); hi = (lo[0] + 1, 0, 0)
+        lo = (int(m.group(1)), int(m.group(2)), 0)
+        hi = (lo[0] + 1, 0, 0) if lo[0] > 0 else (0, lo[1] + 1, 0)
         return lo <= target < hi
-    m = re.match(r"^~(\d+)\.(\d+)\.(\d+)$", range_str)
+    m = re.match(r"^~(\d+)\.(\d+)\.(\d+)", range_str)
     if m:
-        lo = tuple(int(x) for x in m.groups()); hi = (lo[0], lo[1] + 1, 0)
+        lo = tuple(int(x) for x in m.groups())
+        hi = (lo[0], lo[1] + 1, 0)
         return lo <= target < hi
     m = re.match(r"^~(\d+)\.(\d+)$", range_str)
     if m:
-        lo = (int(m.group(1)), int(m.group(2)), 0); hi = (lo[0], lo[1] + 1, 0)
+        lo = (int(m.group(1)), int(m.group(2)), 0)
+        hi = (lo[0], lo[1] + 1, 0)
         return lo <= target < hi
     m = re.match(r"^=?(\d+)\.(\d+)\.(\d+)$", range_str)
     if m:
         return target == tuple(int(x) for x in m.groups())
     m = re.match(r"^(\d+)\.(\d+)\.[xX*]$", range_str)
     if m:
-        lo = (int(m.group(1)), int(m.group(2)), 0); hi = (lo[0], lo[1] + 1, 0)
+        lo = (int(m.group(1)), int(m.group(2)), 0)
+        hi = (lo[0], lo[1] + 1, 0)
+        return lo <= target < hi
+    m = re.match(r"^(\d+)\.[xX*]$", range_str)
+    if m:
+        lo = (int(m.group(1)), 0, 0)
+        hi = (lo[0] + 1, 0, 0)
         return lo <= target < hi
     for op, cmp in [(">=", lambda a, b: a >= b), ("<=", lambda a, b: a <= b),
                     (">", lambda a, b: a > b), ("<", lambda a, b: a < b)]:
         if range_str.startswith(op):
             ver = _parse_version(range_str[len(op):].strip())
+            if ver is None:
+                return None
             return cmp(target, ver)
     m = re.match(r"^(\d+)$", range_str)
     if m:
-        lo = (int(m.group(1)), 0, 0); hi = (lo[0] + 1, 0, 0)
+        lo = (int(m.group(1)), 0, 0)
+        hi = (lo[0] + 1, 0, 0)
         return lo <= target < hi
-    return None
+    return None  # unparseable → UNKNOWN, not False
+
+
+def npm_encode(name: str) -> str:
+    return urllib.parse.quote(name, safe="@")
+
+
+class NotFoundError(Exception):
+    pass
+
+
+async def fetch_json(client: httpx.AsyncClient, method: str, url: str, retries: int = 2, **kwargs):
+    """GET/POST with 429/5xx backoff. Raises on final failure."""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            resp = await client.request(method, url, **kwargs)
+            if resp.status_code == 404:
+                raise NotFoundError(url)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < retries:
+                    await asyncio.sleep(0.6 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+            resp.raise_for_status()
+            return resp.json()
+        except NotFoundError:
+            raise
+        except httpx.HTTPStatusError:
+            raise
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            raise last_exc
 
 
 # ──────────────────────────────────────────────────────────────
@@ -102,8 +191,25 @@ def sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {payload}\n\n"
 
 
+def log_event(text: str, level: str = "info") -> str:
+    return sse_event("log", {"level": level, "text": text})
+
+
+def node_event(pkg_id: str, label: str, version: str, role: str = "consumer") -> str:
+    return sse_event("node", {"id": pkg_id, "label": label, "version": version, "role": role})
+
+
+def edge_event(source: str, target: str, gate: str, verdict: str) -> str:
+    return sse_event("edge", {"from": source, "to": target, "gate": gate, "verdict": verdict})
+
+
+def status_event(pkg_id: str, state: str, evidence: list) -> str:
+    return sse_event("status", {"id": pkg_id, "state": state, "evidence": evidence})
+
+
 # ──────────────────────────────────────────────────────────────
-# API: Replay Mode
+# API: Replay Mode — reads a static file only, no network. Guaranteed to
+# work with the network disconnected.
 # ──────────────────────────────────────────────────────────────
 
 @app.get("/api/replay/event-stream-2018")
@@ -122,297 +228,409 @@ def replay_data():
 # API: Live Scan SSE
 # ──────────────────────────────────────────────────────────────
 
-MAX_DEPENDENTS_LIVE = 15  # cap for demo
-NPM_REGISTRY = "https://registry.npmjs.org"
-OSV_URL = "https://api.osv.dev/v1/query"
-DEPS_DEV = "https://api.deps.dev/v3alpha"
-
-
-async def live_scan_generator(package_name: str) -> AsyncGenerator[str, None]:
+def pick_compromised_version(versions: dict, vulns: list):
     """
-    Async generator producing SSE events for a live scan of `package_name`.
+    versions: {version_str: {...npm version metadata...}}
+    vulns: list of {"id", "summary", "range": "combined AND range string"}
+
+    Returns (compromised_version: str|None, matched_vuln_ids: list[str]).
+    Picks the highest currently-published version that falls inside any
+    advisory's affected range — the most recent vulnerable release still
+    resolvable today. If no currently-published version matches (all
+    vulnerable releases have since been unpublished/deprecated away),
+    returns (None, []) — callers must treat that as UNKNOWN, not "safe".
     """
+    parsed = []
+    for v in versions.keys():
+        t = _parse_version(v)
+        if t is not None:
+            parsed.append((t, v))
+    parsed.sort(reverse=True)
 
-    def log(msg: str, level: str = "info") -> str:
-        return sse_event("log", {"message": msg, "level": level})
+    for _, v in parsed:
+        matched = [vv["id"] for vv in vulns if semver_satisfies(vv["range"], v) is True]
+        if matched:
+            return v, matched
+    return None, []
 
-    def node_event(pkg_name: str, version: str, role: str = "consumer") -> str:
-        return sse_event("node", {"id": pkg_name, "version": version, "role": role, "label": f"{pkg_name}\nv{version}"})
 
-    def edge_event(source: str, target: str, semver_admits) -> str:
-        return sse_event("edge", {"source": source, "target": target, "semver_admits": semver_admits})
+def normalize_osv_vulns(osv_data: dict, package_name: str) -> list:
+    """
+    OSV advisories are often multi-package (e.g. a lodash advisory also lists
+    lodash-es, lodash.trim, ... as separately affected packages within the
+    same record). We must only use the `affected` blocks whose package name
+    exactly matches the package being scanned — mixing another package's
+    range in as an OR branch would silently widen (or narrow) what "admits"
+    means for this scan.
+    """
+    out = []
+    for v in osv_data.get("vulns", []):
+        vid = v.get("id", "?")
+        summary = v.get("summary") or (v.get("details") or "")[:120] or "no summary"
+        parts = []
+        for aff in v.get("affected", []):
+            aff_pkg = aff.get("package", {})
+            if aff_pkg.get("ecosystem") != "npm" or aff_pkg.get("name") != package_name:
+                continue
+            for r in aff.get("ranges", []):
+                if r.get("type") != "SEMVER":
+                    continue
+                comparators = []
+                for evt in r.get("events", []):
+                    if "introduced" in evt and evt["introduced"] not in ("0", ""):
+                        comparators.append(f">={evt['introduced']}")
+                    if "fixed" in evt:
+                        comparators.append(f"<{evt['fixed']}")
+                    if "last_affected" in evt:
+                        comparators.append(f"<={evt['last_affected']}")
+                if comparators:
+                    parts.append(" ".join(comparators))
+                else:
+                    parts.append("*")  # no bound info at all — genuinely still unfixed
+            # Malicious-package advisories (OSV "MAL-*" records, e.g. npm account
+            # takeovers) often list exact poisoned versions instead of a range.
+            for exact_ver in aff.get("versions", []):
+                parts.append(f"={exact_ver}")
+        if not parts:
+            continue  # this advisory didn't actually name this package
+        range_str = " || ".join(parts)
+        out.append({"id": vid, "summary": summary, "range": range_str})
+    return out
 
-    def status_event(pkg_name: str, reachable, evidence: list) -> str:
-        return sse_event("status", {"id": pkg_name, "reachable": reachable, "evidence": evidence})
 
+async def get_dependents(client: httpx.AsyncClient, name: str, latest_ver: str, cap: int):
+    """
+    Returns (total_count, capped_list[{name, version}], source_note, deps_dev_count).
+    Never raises — a failure here degrades to an empty list with an honest
+    warning rather than crashing the whole scan.
+    """
+    enc = npm_encode(name)
+    total = None
+    try:
+        pkg_info = await fetch_json(client, "GET", f"{ECOSYSTEMS}/{enc}", retries=1)
+        total = pkg_info.get("dependent_packages_count")
+    except Exception:
+        pass
+
+    deps_dev_count = None
+    try:
+        dev_resp = await fetch_json(
+            client, "GET",
+            f"{DEPS_DEV}/systems/npm/packages/{enc}/versions/{npm_encode(latest_ver)}:dependents",
+            retries=0,
+        )
+        deps_dev_count = dev_resp.get("directDependentCount")
+    except Exception:
+        pass
+
+    try:
+        data = await fetch_json(
+            client, "GET", f"{ECOSYSTEMS}/{enc}/dependent_packages",
+            params={"per_page": cap, "sort": "downloads"},
+            retries=2, timeout=15.0,
+        )
+        deduped = []
+        seen = set()
+        for p in data:
+            pname = p.get("name")
+            pver = p.get("latest_release_number")
+            if pname and pver and pname not in seen and pname != name:
+                seen.add(pname)
+                # This consumer's OWN dependent count — how many other packages
+                # sit downstream of it. Used to rank mitigation priority: a
+                # reachable consumer with a large downstream reach of its own
+                # is a bigger lever to patch first than one with none.
+                deduped.append({"name": pname, "version": pver, "downstream_reach": p.get("dependent_packages_count") or 0})
+        if total is None:
+            total = len(deduped)
+        return total or 0, deduped[:cap], "ecosyste.ms dependent_packages (sorted by downloads)", deps_dev_count
+    except Exception as e:
+        return (total or 0), [], f"dependents lookup failed: {e}", deps_dev_count
+
+
+async def live_scan_generator(package_name: str, mode: str, cap: int) -> AsyncGenerator[str, None]:
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        enc_name = npm_encode(package_name)
 
-        # ── Step 1: Resolve package on npm ─────────────────────────
-        yield log(f"[1/4] Resolving '{package_name}' on npm registry…")
+        # ── Step 1: Resolve on npm registry ─────────────────────
+        yield log_event(f"Resolving '{package_name}' on the npm registry…")
         try:
-            resp = await client.get(f"{NPM_REGISTRY}/{package_name}")
-            resp.raise_for_status()
-            pkg_data = resp.json()
-            latest_ver = pkg_data.get("dist-tags", {}).get("latest", "unknown")
-            description = pkg_data.get("description", "")
-            yield log(f"      Found: {package_name}@{latest_ver} — {description[:80]}", "info")
-            yield node_event(package_name, latest_ver, role="target")
+            pkg_data = await fetch_json(client, "GET", f"{NPM_REGISTRY}/{enc_name}")
+        except NotFoundError:
+            yield log_event(f"'{package_name}' does not exist on the npm registry. Check the spelling and try again.", "warn")
+            yield sse_event("final", {"error": "not_found", "package": package_name})
+            return
         except Exception as e:
-            yield log(f"      ERROR: could not resolve {package_name}: {e}", "error")
+            yield log_event(f"Could not reach the npm registry: {e}", "warn")
             yield sse_event("final", {"error": str(e), "package": package_name})
             return
 
-        # ── Step 2: OSV.dev vulnerability lookup ────────────────────
-        yield log(f"[2/4] Querying OSV.dev for known vulnerabilities in '{package_name}'…")
-        advisories = []
+        latest_ver = pkg_data.get("dist-tags", {}).get("latest")
+        versions = pkg_data.get("versions", {})
+        if not latest_ver or latest_ver not in versions:
+            yield log_event(f"'{package_name}' has no resolvable 'latest' version on npm.", "warn")
+            yield sse_event("final", {"error": "no_latest_version", "package": package_name})
+            return
+        description = pkg_data.get("description", "")
+        yield log_event(f"Found {package_name}@{latest_ver} — {description[:90]}", "ok")
+        yield node_event(package_name, f"{package_name}\nv{latest_ver}", latest_ver, role="target")
+
+        # ── Step 2: OSV.dev vulnerability lookup ────────────────
+        yield log_event(f"Querying OSV.dev for known advisories against '{package_name}'…")
+        vulns = []
         try:
-            osv_resp = await client.post(
-                OSV_URL,
+            osv_data = await fetch_json(
+                client, "POST", OSV_URL,
                 json={"package": {"name": package_name, "ecosystem": "npm"}},
+                retries=1,
             )
-            osv_resp.raise_for_status()
-            osv_data = osv_resp.json()
-            vulns = osv_data.get("vulns", [])
-            if vulns:
-                yield log(f"      Found {len(vulns)} advisory/advisories:", "warn")
-                for v in vulns[:5]:
-                    vid = v.get("id", "?")
-                    summary = v.get("summary", "no summary")[:100]
-                    affected_ranges = []
-                    for aff in v.get("affected", []):
-                        for r in aff.get("ranges", []):
-                            for evt in r.get("events", []):
-                                if "introduced" in evt:
-                                    affected_ranges.append(f">={evt['introduced']}")
-                                if "fixed" in evt:
-                                    affected_ranges.append(f"<{evt['fixed']}")
-                    range_str = " ".join(affected_ranges[:4]) or "all versions"
-                    yield log(f"      {vid}: {summary} (affected: {range_str})", "warn")
-                    advisories.append({"id": vid, "summary": summary, "affected": range_str})
-                if len(vulns) > 5:
-                    yield log(f"      … and {len(vulns) - 5} more. See https://osv.dev for full list.", "warn")
-            else:
-                yield log(f"      No known vulnerabilities found for '{package_name}' in OSV.dev.", "ok")
+            vulns = normalize_osv_vulns(osv_data, package_name)
         except Exception as e:
-            yield log(f"      OSV.dev query failed: {e}", "warn")
+            yield log_event(f"OSV.dev query failed: {e}. Continuing without advisory data.", "warn")
 
-        # ── Step 3: Find dependents via deps.dev ────────────────────
-        yield log(f"[3/4] Fetching dependents of '{package_name}' from deps.dev…")
-        dependents_found = []
-        try:
-            # Get version list and latest version for the target
-            count_resp = await client.get(
-                f"{DEPS_DEV}/systems/npm/packages/{package_name}/versions/{latest_ver}:dependents"
+        simulated = False
+        compromised_version = None
+        matched_vuln_ids = []
+
+        if vulns:
+            for v in vulns:
+                yield log_event(f"  {v['id']}: {v['summary'][:100]} (affected: {v['range']})", "warn")
+            compromised_version, matched_vuln_ids = pick_compromised_version(versions, vulns)
+
+        if mode == "simulate":
+            simulated = True
+            compromised_version = latest_ver
+            yield log_event(
+                f"SIMULATED COMPROMISE — treating {package_name}@{latest_ver} as hypothetically compromised. "
+                f"This is not a real advisory; results below are a hypothetical blast-radius estimate.",
+                "risk",
             )
-            count_resp.raise_for_status()
-            count_data = count_resp.json()
-            total = count_data.get("directDependentCount", 0)
-            yield log(f"      deps.dev reports {total} direct dependents for {package_name}@{latest_ver}.")
-            if total > MAX_DEPENDENTS_LIVE:
-                yield log(f"      Found {total} dependents — sampling {MAX_DEPENDENTS_LIVE} for live analysis (deterministic, alphabetical).", "warn")
-        except Exception as e:
-            yield log(f"      deps.dev dependents count query failed: {e}", "warn")
-            total = 0
-
-        # Get dependent package list via multi-query npm search + verification
-        # Strategy: run multiple npm search queries (name, keywords, broader text),
-        # collect candidates, then verify each against npm registry package.json.
-        # This is the most honest approach — we only show real, verified dependents.
-        dependents_found = []
-        try:
-            candidates = {}  # name -> version (deduped)
-
-            search_queries = [
-                package_name,              # packages named/related to target
-                f"{package_name} plugin",  # plugins/extensions of target
-                f"{package_name} middleware",
-                f"{package_name} adapter",
-            ]
-            for query in search_queries:
-                if len(candidates) >= MAX_DEPENDENTS_LIVE * 5:
-                    break
-                try:
-                    sresp = await client.get(
-                        f"{NPM_REGISTRY}/-/v1/search",
-                        params={"text": query, "size": 50},
-                    )
-                    sresp.raise_for_status()
-                    for obj in sresp.json().get("objects", []):
-                        pname = obj.get("package", {}).get("name", "")
-                        pver  = obj.get("package", {}).get("version", "")
-                        if pname and pname != package_name and pname not in candidates:
-                            candidates[pname] = pver
-                except Exception:
-                    pass
-
-            yield log(f"      Gathered {len(candidates)} candidate packages to verify.")
-
-            # Verify candidates against npm registry
-            verified = []
-            for cname, cver in list(candidates.items()):
-                if len(verified) >= MAX_DEPENDENTS_LIVE:
-                    break
-                try:
-                    pkg_resp = await client.get(f"{NPM_REGISTRY}/{cname}/{cver}")
-                    pkg_resp.raise_for_status()
-                    deps = pkg_resp.json().get("dependencies", {})
-                    declared = deps.get(package_name)
-                    if declared:
-                        verified.append({
-                            "name": cname,
-                            "version": cver,
-                            "declared_range": declared,
-                        })
-                except Exception:
-                    continue
-
-            dependents_found = verified
-            yield log(
-                f"      Verified {len(dependents_found)} real dependents "
-                f"(packages that declare '{package_name}' in their dependencies)."
-                + ("" if dependents_found else
-                   " Note: npm full-text search does not index dependency fields directly — "
-                   "this is a real limitation of the npm search API, not a tool flaw."),
-                "ok" if dependents_found else "warn",
+        elif not vulns:
+            yield log_event(f"No known vulnerabilities for '{package_name}' in OSV.dev.", "ok")
+            yield sse_event("final", {
+                "no_advisories": True,
+                "package": package_name,
+                "version": latest_ver,
+                "can_simulate": True,
+            })
+            return
+        elif compromised_version is None:
+            yield log_event(
+                f"Found {len(vulns)} advisory/advisories, but every affected version has since been "
+                f"unpublished — no currently-installable version to test consumers' ranges against. "
+                f"Marking dependent semver checks UNKNOWN rather than guessing.",
+                "warn",
+            )
+        else:
+            yield log_event(
+                f"Using {package_name}@{compromised_version} as the compromised version "
+                f"(matches {', '.join(matched_vuln_ids)}).",
+                "risk",
             )
 
-        except Exception as e:
-            yield log(f"      Dependent discovery failed: {e}", "warn")
-            dependents_found = []
+        yield status_event(
+            package_name, "source",
+            ([f"SIMULATED: {package_name}@{latest_ver} treated as a hypothetical compromise for this scan."]
+             if simulated else
+             [f"ADVISORY {v['id']}: {v['summary']} (affected: {v['range']})" for v in vulns]),
+        )
 
-        # Emit node + edge for each verified dependent
-
-        for dep in dependents_found:
-            dep_name = dep["name"]
-            dep_ver = dep["version"]
-            dep_range = dep["declared_range"]
-            yield node_event(dep_name, dep_ver, role="consumer")
-            await asyncio.sleep(0.05)  # stagger for live effect
-
-            # L2: semver gate
-            admits = semver_satisfies(dep_range, latest_ver)
-            admits_label = (
-                "ADMITS" if admits is True
-                else ("REJECTS" if admits is False else "UNKNOWN")
+        # ── Step 3: Find dependents ──────────────────────────────
+        yield log_event(f"Fetching dependents of '{package_name}'…")
+        total, dependents, source_note, deps_dev_count = await get_dependents(client, package_name, latest_ver, cap)
+        if deps_dev_count is not None:
+            yield log_event(
+                f"deps.dev reports {deps_dev_count:,} direct dependents for {package_name}@{latest_ver} "
+                f"(count only — deps.dev's API does not expose the dependent package list itself).",
+                "info",
             )
-            yield log(
-                f"      [{dep_name}@{dep_ver}] declared range '{dep_range}' "
-                f"{admits_label} {package_name}@{latest_ver}",
-                "ok" if admits is True else ("warn" if admits is None else "info"),
-            )
-            yield edge_event(dep_name, package_name, admits)
-            dep["semver_admits"] = admits
+        if total > len(dependents):
+            yield log_event(f"Found {total:,} dependents — analysing {len(dependents)} (source: {source_note}).", "warn")
+        elif dependents:
+            yield log_event(f"Found {len(dependents)} dependents — analysing all of them (source: {source_note}).", "ok")
+        else:
+            yield log_event(f"No dependents could be resolved ({source_note}).", "warn")
 
-        # ── Step 4: Reachability check ───────────────────────────────
-        yield log(f"[4/4] Walking reachability chains for verified dependents…")
-
-        all_packages = []
-        # Target package itself (compromise source or just subject)
-        all_packages.append({
-            "name": package_name,
-            "version": latest_ver,
-            "role": "target",
-            "in_tree": True,
-            "declared_range": "N/A",
-            "semver_admits": None,
-            "symbol_reachable": None,
-            "evidence": (
-                [f"ADVISORY: {a['id']} — {a['summary']} (affected: {a['affected']})" for a in advisories]
-                if advisories else [f"No known OSV.dev advisories for {package_name}@{latest_ver}."]
-            ),
-        })
-
+        in_tree = 0
+        semver_admits_count = 0
         symbol_reachable_count = 0
         unknown_count = 0
+        all_packages = [{
+            "name": package_name, "version": latest_ver, "role": "source",
+            "in_tree": True, "declared_range": None, "semver_admits": None,
+            "symbol_reachable": None, "simulated": simulated,
+            "evidence": [f"ADVISORY {v['id']}: {v['summary']}" for v in vulns] or ["No advisory — simulated run." if simulated else ""],
+        }]
 
-        for dep in dependents_found:
-            dep_name = dep["name"]
-            dep_ver = dep["version"]
-            dep_range = dep["declared_range"]
-            admits = dep.get("semver_admits")
+        # ── Step 4/5: L1 → L2 → L3 per dependent ────────────────
+        for dep in dependents:
+            dep_name, dep_ver = dep["name"], dep["version"]
+            dep_reach = dep.get("downstream_reach", 0)
+            dep_id = dep_name
+            yield node_event(dep_id, f"{dep_name}\nv{dep_ver}", dep_ver, role="consumer")
+            await asyncio.sleep(0.04)
 
-            evidence = [
-                f"L1: {dep_name}@{dep_ver} declares {package_name}: '{dep_range}' (verified from npm registry)",
-                f"L2: range '{dep_range}' {'ADMITS' if admits is True else ('REJECTS' if admits is False else 'UNKNOWN')} {package_name}@{latest_ver}",
-            ]
+            evidence = []
+            # L1: fetch this dependent's manifest at its current published version
+            try:
+                manifest = await fetch_json(client, "GET", f"{NPM_REGISTRY}/{npm_encode(dep_name)}/{dep_ver}", retries=1)
+            except Exception as e:
+                evidence.append(f"L1: UNKNOWN — could not fetch {dep_name}@{dep_ver}'s manifest ({e}).")
+                unknown_count += 1
+                yield edge_event(dep_id, package_name, "L1", "unknown")
+                yield log_event(f"  [{dep_name}] manifest fetch failed — UNKNOWN", "warn")
+                yield status_event(dep_id, "unknown", evidence)
+                all_packages.append({"name": dep_name, "version": dep_ver, "role": "consumer",
+                                      "in_tree": None, "declared_range": None, "semver_admits": None,
+                                      "symbol_reachable": None, "evidence": evidence})
+                continue
 
-            if admits is not True:
-                reachable = False
-                evidence.append("L3: Skipped — L2 gate not passed (range does not admit the target version).")
-                yield log(f"      [{dep_name}] L3 skip (L2 rejected)", "info")
+            declared_range = None
+            for dep_field in ("dependencies", "peerDependencies", "optionalDependencies"):
+                declared_range = (manifest.get(dep_field) or {}).get(package_name)
+                if declared_range:
+                    break
+
+            if not declared_range:
+                evidence.append(
+                    f"L1: NOT IN TREE — {dep_name}@{dep_ver} (its current published version) does not declare "
+                    f"'{package_name}' as a dependency. It may have upgraded away from it since being indexed."
+                )
+                yield edge_event(dep_id, package_name, "L1", "not_declared")
+                yield log_event(f"  [{dep_name}] no longer depends on {package_name} — filtered out", "info")
+                yield status_event(dep_id, "safe", evidence)
+                all_packages.append({"name": dep_name, "version": dep_ver, "role": "consumer",
+                                      "in_tree": False, "declared_range": None, "semver_admits": None,
+                                      "symbol_reachable": None, "evidence": evidence})
+                continue
+
+            in_tree += 1
+            evidence.append(f"L1: IN TREE — {dep_name}@{dep_ver} declares '{package_name}': \"{declared_range}\".")
+            yield edge_event(dep_id, package_name, "L1", "in_tree")
+
+            # L2: semver gate
+            if compromised_version is None:
+                admits = None
+                evidence.append("L2: UNKNOWN — no concrete compromised version to compare against (see log).")
+                yield edge_event(dep_id, package_name, "L2", "unknown")
+                yield log_event(f"  [{dep_name}] L2 UNKNOWN (no compromised version resolved)", "warn")
+                unknown_count += 1
+                yield status_event(dep_id, "unknown", evidence)
+                all_packages.append({"name": dep_name, "version": dep_ver, "role": "consumer",
+                                      "in_tree": True, "declared_range": declared_range, "semver_admits": None,
+                                      "symbol_reachable": None, "evidence": evidence})
+                continue
+
+            admits = semver_satisfies(declared_range, compromised_version)
+            if admits is True:
+                semver_admits_count += 1
+                evidence.append(f"L2: ADMITS — range \"{declared_range}\" allows {package_name}@{compromised_version}.")
+                yield edge_event(dep_id, package_name, "L2", "admits")
+                yield log_event(f"  [{dep_name}] range \"{declared_range}\" ADMITS {compromised_version}", "risk")
+            elif admits is False:
+                evidence.append(f"L2: REJECTS — range \"{declared_range}\" excludes {package_name}@{compromised_version}. Never exposed.")
+                yield edge_event(dep_id, package_name, "L2", "rejects")
+                yield log_event(f"  [{dep_name}] range \"{declared_range}\" rejects {compromised_version} — filtered out", "ok")
+                yield status_event(dep_id, "safe", evidence)
+                all_packages.append({"name": dep_name, "version": dep_ver, "role": "consumer",
+                                      "in_tree": True, "declared_range": declared_range, "semver_admits": False,
+                                      "symbol_reachable": None, "evidence": evidence})
+                continue
             else:
-                # Walk reachability chain: dep -> package_name
-                # For live scan we check if the consumer loads the package unconditionally
-                yield log(f"      [{dep_name}] Checking unconditional load chain…", "info")
-                tarball_path = TARBALL_DIR / f"{dep_name}-{dep_ver}.tgz"
+                evidence.append(f"L2: UNKNOWN — could not parse range \"{declared_range}\".")
+                yield edge_event(dep_id, package_name, "L2", "unknown")
+                yield log_event(f"  [{dep_name}] unparseable range \"{declared_range}\" — UNKNOWN", "warn")
+                unknown_count += 1
+                yield status_event(dep_id, "unknown", evidence)
+                all_packages.append({"name": dep_name, "version": dep_ver, "role": "consumer",
+                                      "in_tree": True, "declared_range": declared_range, "semver_admits": None,
+                                      "symbol_reachable": None, "evidence": evidence})
+                continue
 
-                # Download tarball if not already present
+            # L3: chain-walk reachability (single hop: dependent -> target)
+            tarball_url = (manifest.get("dist") or {}).get("tarball")
+            safe_fname = dep_name.replace("/", "__") + f"-{dep_ver}.tgz"
+            tarball_path = TARBALL_DIR / safe_fname
+            reachable = None
+            if not tarball_url:
+                evidence.append("L3: UNKNOWN — manifest had no downloadable tarball.")
+                unknown_count += 1
+            else:
                 if not tarball_path.exists() or tarball_path.stat().st_size < 100:
-                    yield log(f"      [{dep_name}] Downloading tarball…", "info")
                     try:
-                        dl_resp = await client.get(f"{NPM_REGISTRY}/{dep_name}/-/{dep_name}-{dep_ver}.tgz")
+                        dl_resp = await client.get(tarball_url, timeout=20.0)
                         dl_resp.raise_for_status()
                         tarball_path.write_bytes(dl_resp.content)
-                        yield log(f"      [{dep_name}] Downloaded ({len(dl_resp.content):,} bytes)", "info")
                     except Exception as e:
-                        yield log(f"      [{dep_name}] Tarball download failed: {e}", "warn")
-                        reachable = None
                         evidence.append(f"L3: UNKNOWN — tarball download failed: {e}")
                         unknown_count += 1
-                        all_packages.append({
-                            "name": dep_name, "version": dep_ver, "role": "consumer",
-                            "in_tree": True, "declared_range": dep_range,
-                            "semver_admits": admits, "symbol_reachable": reachable, "evidence": evidence,
-                        })
-                        yield status_event(dep_name, reachable, evidence)
-                        continue
+                        tarball_path = None
 
-                # Single-hop chain: dep -> package_name
-                # (We don't recurse further in live scan mode — scoped to one level)
-                hop_result, hop_ev = check_hop(str(tarball_path), package_name)
-                evidence.append(f"L3 HOP {dep_name}@{dep_ver} -> {package_name}: {hop_result.upper()} — {hop_ev}")
+                if tarball_path is not None and tarball_path.exists():
+                    hop_result, hop_ev = check_hop(str(tarball_path), package_name)
+                    evidence.append(f"L3 CHAIN WALK {dep_name}@{dep_ver} -> {package_name}: {hop_result.upper()} — {hop_ev}")
+                    if hop_result == "unconditional":
+                        reachable = True
+                        symbol_reachable_count += 1
+                    elif hop_result == "unknown":
+                        reachable = None
+                        unknown_count += 1
+                    else:
+                        reachable = False
 
-                if hop_result == "unconditional":
-                    reachable = True
-                    symbol_reachable_count += 1
-                    evidence.append(f"L3: REACHABLE — {dep_name} loads {package_name} unconditionally at module top-level.")
-                    yield log(f"      [{dep_name}] REACHABLE (unconditional load)", "danger")
-                elif hop_result == "unknown":
-                    reachable = None
-                    unknown_count += 1
-                    evidence.append(f"L3: UNKNOWN — could not determine if {dep_name}'s require is conditional.")
-                    yield log(f"      [{dep_name}] UNKNOWN (unanalysable)", "warn")
-                elif hop_result == "not_found":
-                    reachable = False
-                    evidence.append(f"L3: Not reachable — {dep_name} does not require {package_name} directly.")
-                    yield log(f"      [{dep_name}] not reachable (no direct require found)", "ok")
-                else:
-                    reachable = False
-                    evidence.append(f"L3: Not reachable — {dep_name}'s require of {package_name} appears conditional.")
-                    yield log(f"      [{dep_name}] not reachable (conditional require)", "ok")
+            if reachable is True:
+                evidence.append(
+                    f"MITIGATION: {dep_name} itself has {dep_reach:,} downstream dependents — "
+                    f"patching it cuts off exposure for all of them at once."
+                    if dep_reach else
+                    f"MITIGATION: {dep_name} has no known downstream dependents of its own — "
+                    f"patching it only protects this one package."
+                )
+                yield edge_event(dep_id, package_name, "L3", "reachable")
+                yield log_event(f"  [{dep_name}] REACHABLE — loads {package_name} unconditionally", "risk")
+                yield status_event(dep_id, "reachable", evidence)
+            elif reachable is None:
+                yield edge_event(dep_id, package_name, "L3", "unknown")
+                yield log_event(f"  [{dep_name}] L3 UNKNOWN — could not statically determine", "warn")
+                yield status_event(dep_id, "unknown", evidence)
+            else:
+                yield edge_event(dep_id, package_name, "L3", "safe")
+                yield log_event(f"  [{dep_name}] not reachable — filtered out at L3", "ok")
+                yield status_event(dep_id, "safe", evidence)
 
-            all_packages.append({
-                "name": dep_name, "version": dep_ver, "role": "consumer",
-                "in_tree": True, "declared_range": dep_range,
-                "semver_admits": admits, "symbol_reachable": reachable, "evidence": evidence,
-            })
-            yield status_event(dep_name, reachable, evidence)
-            await asyncio.sleep(0.05)
+            all_packages.append({"name": dep_name, "version": dep_ver, "role": "consumer",
+                                  "in_tree": True, "declared_range": declared_range, "semver_admits": True,
+                                  "symbol_reachable": reachable, "downstream_reach": dep_reach, "evidence": evidence})
+            await asyncio.sleep(0.04)
 
-        # ── Final event ────────────────────────────────────────────
-        in_tree = len(dependents_found)
-        semver_admits_count = sum(1 for d in dependents_found if d.get("semver_admits") is True)
+        # Mitigation priority: among the reachable consumers, the ones that
+        # themselves have the most downstream dependents are the highest-
+        # leverage packages to patch first — fixing one there closes the
+        # exposure for everything sitting behind it too.
+        priority = sorted(
+            (p for p in all_packages if p.get("symbol_reachable") is True),
+            key=lambda p: p.get("downstream_reach", 0), reverse=True,
+        )
+        priority = [{"name": p["name"], "downstream_reach": p.get("downstream_reach", 0)} for p in priority]
 
-        yield log(
-            f"Scan complete. "
-            f"In tree: {in_tree}  |  Semver admits: {semver_admits_count}  |  "
-            f"Symbol reachable: {symbol_reachable_count}  |  Unknown: {unknown_count}",
-            "info",
+        if priority:
+            yield log_event("Mitigation priority — patch these first for the biggest reduction in exposure:", "risk")
+            for p in priority[:5]:
+                reach_note = f"feeds {p['downstream_reach']:,} more packages" if p["downstream_reach"] else "no further downstream reach"
+                yield log_event(f"  {p['name']} — {reach_note}", "risk")
+
+        yield log_event(
+            f"Scan complete. In tree: {in_tree}  Semver admits: {semver_admits_count}  "
+            f"Reachable: {symbol_reachable_count}  Unknown: {unknown_count}",
+            "ok",
         )
         yield sse_event("final", {
             "package": package_name,
             "version": latest_ver,
-            "advisories": advisories,
+            "compromised_version": compromised_version,
+            "simulated": simulated,
+            "advisories": vulns,
+            "priority": priority,
             "counts": {
                 "in_tree": in_tree,
                 "semver_admits": semver_admits_count,
@@ -424,21 +642,23 @@ async def live_scan_generator(package_name: str) -> AsyncGenerator[str, None]:
 
 
 @app.get("/api/scan/stream")
-async def scan_stream(package: str = Query(..., min_length=1)):
+async def scan_stream(
+    package: str = Query(..., min_length=1),
+    mode: str = Query("real", pattern="^(real|simulate)$"),
+    limit: int = Query(DEFAULT_CAP, ge=1, le=MAX_CAP),
+):
     async def generator_with_error_handling():
         try:
-            async for chunk in live_scan_generator(package):
+            async for chunk in live_scan_generator(package.strip(), mode, limit):
                 yield chunk
         except Exception as e:
-            yield sse_event("error", {"message": str(e)})
+            yield sse_event("log", {"level": "warn", "text": f"Scan error: {e}"})
+            yield sse_event("final", {"error": str(e)})
 
     return StreamingResponse(
         generator_with_error_handling(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

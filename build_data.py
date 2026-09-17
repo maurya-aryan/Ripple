@@ -216,6 +216,7 @@ CONSUMER_PACKAGES = [
         "name": "nodemon",
         "version": "1.12.5",
         "declared_range": "TRANSITIVE via ps-tree@^1.1.0",
+        "transitive_via": {"name": "ps-tree", "version": "1.1.0"},
         "tarball_url": "https://registry.npmjs.org/nodemon/-/nodemon-1.12.5.tgz",
         "range_source": "registry.npmjs.org/nodemon/1.12.5 → dependencies['ps-tree'] = '^1.1.0'",
     },
@@ -321,11 +322,19 @@ def main():
 
         # L2: semver gate
         if declared_range.startswith("TRANSITIVE"):
-            semver_admits = None
+            # N/A at this hop is not the same as a gate failure. {name} declares
+            # no direct range on event-stream, so L2 is evaluated at the hop
+            # where the range actually lives (ps-tree -> event-stream, ~3.3.0,
+            # which ADMITS 3.3.6) and that verdict is INHERITED down the chain.
+            # An inherited ADMITS must still read as "exposed", not fall through
+            # to None/False — that silent conflation is what caused nodemon to
+            # be wrongly marked not-reachable.
+            semver_admits = True
             l2_evidence = (
-                f"L2: N/A — {name} has no direct event-stream dependency. "
-                f"It resolves event-stream transitively via ps-tree@^1.1.0, "
-                f"which declares event-stream ~3.3.0 (ADMITS 3.3.6)."
+                f"L2: INHERITED — {name} declares no direct range on event-stream; "
+                f"it resolves it transitively via ps-tree@^1.1.0, which declares "
+                f"'~3.3.0'. That range ADMITS event-stream@3.3.6, so the verdict "
+                f"is inherited down the chain to {name}."
             )
         else:
             result = semver_satisfies(declared_range, POISONED_EVENT_STREAM_VERSION)
@@ -359,11 +368,20 @@ def main():
         if download_tarball(name, version, tarball_url) is None:
             assumptions.append(f"{name}@{version}: tarball download failed")
 
-        evidence = [
-            f"L1: {name}@{version} is present in the event-stream dependency graph "
-            f"as a consumer (depends on event-stream).",
-            l2_evidence,
-        ]
+        if declared_range.startswith("TRANSITIVE") and pkg.get("transitive_via"):
+            mid = pkg["transitive_via"]
+            l1_evidence = (
+                f"L1: {name}@{version} is present in the event-stream dependency graph "
+                f"as a transitive consumer — it depends on {mid['name']}@{mid['version']}, "
+                f"which is the package that actually declares event-stream."
+            )
+        else:
+            l1_evidence = (
+                f"L1: {name}@{version} is present in the event-stream dependency graph "
+                f"as a consumer (depends on event-stream)."
+            )
+
+        evidence = [l1_evidence, l2_evidence]
 
         node = {
             "name": name,
@@ -375,6 +393,8 @@ def main():
             "symbol_reachable": None,  # filled by reachability/scan.py
             "evidence": evidence,
         }
+        if pkg.get("transitive_via"):
+            node["transitive_via"] = pkg["transitive_via"]
         graph_data.append(node)
 
     # Write graph.json
