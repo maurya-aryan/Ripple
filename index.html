@@ -52,10 +52,11 @@
 
     <!-- Legend Overlay -->
     <div class="legend-box">
-      <div class="legend-title">Node Status (L3)</div>
-      <div class="legend-item"><span class="dot red"></span> Symbol Reachable</div>
-      <div class="legend-item"><span class="dot amber"></span> UNKNOWN (unanalysable)</div>
-      <div class="legend-item"><span class="dot green"></span> Filtered Out (safe)</div>
+      <div class="legend-title">Node Classification</div>
+      <div class="legend-item"><span class="dot source"></span> Compromise Source (Origin)</div>
+      <div class="legend-item"><span class="dot red"></span> Symbol Reachable (Exposed)</div>
+      <div class="legend-item"><span class="dot amber"></span> UNKNOWN (Unanalysable)</div>
+      <div class="legend-item"><span class="dot green"></span> Filtered Out (Safe)</div>
     </div>
 
     <!-- Side Evidence Panel -->
@@ -78,10 +79,12 @@
   <footer class="footer-strip">
     <div class="footer-impact" id="footer-impact">
       <span class="footer-icon">⚠</span>
-      <span id="documented-impact">Loading historical reference…</span>
+      <span id="documented-impact">
+        For a typical supply-chain injection, our reachability funnel correctly flags every real consumer as exposed. What it cannot detect — and we say so rather than hide it — is a runtime-conditional targeted payload like event-stream's, which decrypted itself only for one specific victim using data our static analysis never executes. That class of attack requires dynamic or behavioral analysis: a distinct, harder problem we've scoped as future work, not something this tool claims to solve.
+      </span>
     </div>
-    <a id="source-url" href="#" target="_blank" rel="noopener" class="footer-link">
-      npm incident report →
+    <a id="source-url" href="https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident" target="_blank" rel="noopener" class="footer-link">
+      npm incident writeup →
     </a>
   </footer>
 

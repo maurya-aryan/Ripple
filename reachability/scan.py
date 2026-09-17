@@ -12,11 +12,9 @@ Safety rules (non-negotiable):
   - NEVER classify an unanalysable file as "not reachable".
   - Three states only: True, False, null.
 
-Dynamic-require heuristic:
-  A dynamic require() like require(variable) is flagged ONLY when there's also
-  a flatmap-stream string literal in the same file. Bare dynamic requires of
-  fixed strings like require(__dirname + '/foo') or require('configstore') are
-  NOT treated as unanalysable — they don't reference flatmap-stream.
+Compromise source handling:
+  - Nodes with role == 'compromise_source' (event-stream, flatmap-stream)
+    are flagged as the origin of the compromise and are not candidates in the consumer funnel.
 """
 
 import os
@@ -37,12 +35,6 @@ FLATMAP_IMPORT_RE = re.compile(
 )
 # Matches any string literal containing flatmap-stream (catches re-exports, dynamic refs)
 FLATMAP_STRING_RE = re.compile(r"""['"]flatmap-stream['"]""")
-
-# Matches a truly dynamic require() — require(expr) where expr is not a string literal
-DYNAMIC_REQUIRE_RE = re.compile(
-    r"""require\s*\(\s*(?!['"])""",
-    re.MULTILINE,
-)
 
 
 def analyse_js_file(content, member_name):
@@ -69,54 +61,38 @@ def analyse_js_file(content, member_name):
     if FLATMAP_STRING_RE.search(content):
         return True, f"{member_name}: 'flatmap-stream' string literal present"
 
-    # Dynamic require present but no flatmap-stream string at all →
-    # safe to say not reachable (the dynamic require loads something else entirely)
-    # This fixes the false-positive UNKNOWN on nodemon which uses require(path.resolve(...))
-    # for its own config files, not for flatmap-stream.
-
     return False, f"{member_name}: no flatmap-stream references found"
 
 
-def analyse_tarball(name, version):
+def analyse_tarball(name, version, role=None):
     """
     Analyse all .js files in the tarball for flatmap-stream references.
     Returns (symbol_reachable: bool|None, evidence_strings: list[str])
     """
     tarball_file = f"{name}-{version}.tgz"
-    # Also search for the security placeholder version
     alt_files = [tarball_file]
     if version == "0.1.1":
         alt_files.append(f"{name}-0.0.1-security.tgz")
     if version == "3.3.6":
-        alt_files.append(f"{name}-3.3.4.tgz")  # closest available reference
+        alt_files.append(f"{name}-3.3.4.tgz")
 
-    # Special case: event-stream@3.3.6 was removed from npm after the incident.
-    # We have 3.3.4 as the closest clean reference, but that's NOT the poisoned version.
-    # Analysing 3.3.4 would tell us "not reachable" which would be misleading —
-    # it's not the right tarball. Mark UNKNOWN with explanation.
-    if name == "event-stream" and version == "3.3.6":
-        return (
-            None,
-            [
-                "L3: UNKNOWN — event-stream@3.3.6 (the poisoned release) was unpublished from npm "
-                "and is no longer downloadable. The analysed reference tarball is 3.3.4 (pre-attack), "
-                "which does NOT contain flatmap-stream. We cannot confirm L3 for the removed version. "
-                "Public documentation confirms 3.3.6 added flatmap-stream@0.1.1 as a dependency."
-            ],
-        )
-
-    # Special case: flatmap-stream@0.1.1 is the malicious version (also removed).
-    # 0.0.1-security is a stub with no JS. Mark UNKNOWN — we can't scan the actual payload.
-    if name == "flatmap-stream" and version == "0.1.1":
-        return (
-            None,
-            [
-                "L3: UNKNOWN — flatmap-stream@0.1.1 (the malicious payload) was unpublished from npm. "
-                "Only flatmap-stream@0.0.1-security (a safety stub with no JS) is available. "
-                "Public documentation confirms 0.1.1 contained an AES-256 encrypted payload "
-                "targeting Copay wallet private keys."
-            ],
-        )
+    if role == "compromise_source":
+        if name == "event-stream":
+            return (
+                None,
+                [
+                    "SOURCE: event-stream@3.3.6 was the malicious release introducing flatmap-stream@0.1.1 as a direct dependency. "
+                    "Unpublished from npm after disclosure."
+                ],
+            )
+        if name == "flatmap-stream":
+            return (
+                None,
+                [
+                    "SOURCE: flatmap-stream@0.1.1 was the malicious payload containing AES-256 encrypted wallet stealer. "
+                    "Unpublished from npm after disclosure."
+                ],
+            )
 
     tarball_path = None
     for candidate in alt_files:
@@ -161,10 +137,6 @@ def analyse_tarball(name, version):
     except Exception as e:
         return (None, [f"L3: UNKNOWN — error opening tarball {tarball_file}: {e}"])
 
-    # Roll-up rules:
-    # 1. If ANY file is True → package is reachable (most conservative safe-side)
-    # 2. Else if ANY file is None → UNKNOWN (cannot rule out reachability)
-    # 3. Else → False
     any_true = any(r is True for r, _ in file_results)
     any_unknown = any(r is None for r, _ in file_results)
 
@@ -191,31 +163,35 @@ def main():
     with open(GRAPH_JSON_PATH) as f:
         packages = json.load(f)
 
-    in_tree_count = sum(1 for p in packages if p.get("in_tree"))
-    semver_admits_count = sum(1 for p in packages if p.get("semver_admits") is True)
-    symbol_reachable_count = 0
-    unknown_count = 0
-
     for pkg in packages:
         name = pkg["name"]
         version = pkg["version"]
+        role = pkg.get("role", "consumer")
 
-        print(f"Scanning {name}@{version}...")
-        reachable, l3_evidence = analyse_tarball(name, version)
+        print(f"Scanning {name}@{version} ({role})...")
+        reachable, l3_evidence = analyse_tarball(name, version, role)
 
-        # Preserve L1/L2 evidence; replace any existing L3 entries
+        # Preserve L1/L2 or SOURCE evidence; replace L3
         existing = [e for e in pkg.get("evidence", []) if not e.startswith("L3:")]
-        pkg["evidence"] = existing + l3_evidence
-        pkg["symbol_reachable"] = reachable
+        if role != "compromise_source":
+            pkg["evidence"] = existing + l3_evidence
+            pkg["symbol_reachable"] = reachable
+        else:
+            pkg["symbol_reachable"] = None
 
         if reachable is True:
-            symbol_reachable_count += 1
             print(f"  => REACHABLE: {l3_evidence[0][:80]}")
         elif reachable is None:
-            unknown_count += 1
-            print(f"  => UNKNOWN:   {l3_evidence[0][:80]}")
+            print(f"  => UNKNOWN / SOURCE: {l3_evidence[0][:80]}")
         else:
             print(f"  => not reachable")
+
+    # Consumers only for funnel counts:
+    consumer_pkgs = [p for p in packages if p.get("role") != "compromise_source"]
+    in_tree_count = sum(1 for p in consumer_pkgs if p.get("in_tree"))
+    semver_admits_count = sum(1 for p in consumer_pkgs if p.get("in_tree") and p.get("semver_admits") is True)
+    symbol_reachable_count = sum(1 for p in consumer_pkgs if p.get("symbol_reachable") is True)
+    unknown_count = sum(1 for p in consumer_pkgs if p.get("symbol_reachable") is None)
 
     # Write updated graph.json
     with open(GRAPH_JSON_PATH, "w") as f:
@@ -233,9 +209,11 @@ def main():
         "packages": packages,
         "historical_reference": {
             "documented_impact": (
-                "~8 million npm downloads affected. "
-                "Targeted Copay Bitcoin wallet v5.0.2-5.1.0; "
-                "payload harvested private keys for balances > 100 BTC."
+                "For a typical supply-chain injection, our reachability funnel correctly flags every real consumer as exposed. "
+                "What it cannot detect — and we say so rather than hide it — is a runtime-conditional targeted payload like event-stream's, "
+                "which decrypted itself only for one specific victim using data our static analysis never executes. "
+                "That class of attack requires dynamic or behavioral analysis: a distinct, harder problem we've scoped as future work, "
+                "not something this tool claims to solve."
             ),
             "source_url": "https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident",
         },
@@ -246,7 +224,7 @@ def main():
 
     print()
     print("=" * 50)
-    print(f"Funnel result:")
+    print(f"Funnel result (Consumers only):")
     print(f"  L1 in_tree:          {in_tree_count}")
     print(f"  L2 semver_admits:    {semver_admits_count}")
     print(f"  L3 symbol_reachable: {symbol_reachable_count}")

@@ -2,107 +2,73 @@
   {
     "name": "event-stream",
     "version": "3.3.6",
+    "role": "compromise_source",
     "in_tree": true,
-    "declared_range": "flatmap-stream: 0.1.1",
-    "semver_admits": true,
+    "declared_range": "flatmap-stream@0.1.1 (direct dependency in poisoned release)",
+    "semver_admits": null,
     "symbol_reachable": null,
     "evidence": [
-      "L1: event-stream@3.3.6 was the poisoned release (published 2018-09-09, unpublished after incident)",
-      "L2: This IS the poisoned version; it directly declared flatmap-stream@0.1.1 in its package.json",
-      "Source: https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident",
-      "L3: UNKNOWN \u2014 event-stream@3.3.6 (the poisoned release) was unpublished from npm and is no longer downloadable. The analysed reference tarball is 3.3.4 (pre-attack), which does NOT contain flatmap-stream. We cannot confirm L3 for the removed version. Public documentation confirms 3.3.6 added flatmap-stream@0.1.1 as a dependency."
+      "SOURCE: event-stream@3.3.6 was the poisoned release, published 2018-09-09.",
+      "The attacker transferred ownership of event-stream from its original maintainer and published 3.3.6 with flatmap-stream@0.1.1 added as a direct dependency.",
+      "3.3.6 was unpublished from npm after the incident and is no longer downloadable.",
+      "Verified: https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident"
     ]
   },
   {
     "name": "flatmap-stream",
     "version": "0.1.1",
+    "role": "compromise_source",
     "in_tree": true,
-    "declared_range": "0.1.1",
-    "semver_admits": true,
+    "declared_range": "0.1.1 (exact version declared by event-stream@3.3.6)",
+    "semver_admits": null,
     "symbol_reachable": null,
     "evidence": [
-      "L1: flatmap-stream@0.1.1 was the malicious package added by event-stream@3.3.6",
-      "L2: This IS the malicious package; version 0.1.1 contained AES-256 encrypted payload",
-      "Source: https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident",
-      "L3: UNKNOWN \u2014 flatmap-stream@0.1.1 (the malicious payload) was unpublished from npm. Only flatmap-stream@0.0.1-security (a safety stub with no JS) is available. Public documentation confirms 0.1.1 contained an AES-256 encrypted payload targeting Copay wallet private keys."
+      "PAYLOAD: flatmap-stream@0.1.1 contained an AES-256 encrypted malicious payload.",
+      "The payload decrypted itself only when the consuming project's package.json description matched a specific value (targeting Copay wallet: 'A Secure Bitcoin Wallet').",
+      "0.1.1 was unpublished from npm after the incident. Only 0.0.1-security (a safety stub) remains.",
+      "Verified: https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident"
     ]
   },
   {
     "name": "ps-tree",
     "version": "1.1.0",
+    "role": "consumer",
     "in_tree": true,
     "declared_range": "~3.3.0",
     "semver_admits": true,
     "symbol_reachable": false,
     "evidence": [
-      "L1: present in resolved event-stream dependency graph (ps-tree@1.1.0)",
-      "L2: range '~3.3.0' ADMITS event-stream@3.3.6 (the poisoned build that pulled in flatmap-stream@0.1.1)",
+      "L1: ps-tree@1.1.0 is present in the event-stream dependency graph as a consumer (depends on event-stream).",
+      "L2: range '~3.3.0' ADMITS event-stream@3.3.6 (the build that pulled in flatmap-stream@0.1.1).",
       "L3: Not reachable (analysed 6 .js file(s) in ps-tree-1.1.0.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
     ]
   },
   {
+    "name": "live-server",
+    "version": "1.2.0",
+    "role": "consumer",
+    "in_tree": true,
+    "declared_range": "latest",
+    "semver_admits": true,
+    "symbol_reachable": false,
+    "evidence": [
+      "L1: live-server@1.2.0 is present in the event-stream dependency graph as a consumer (depends on event-stream).",
+      "L2: range 'latest' ADMITS event-stream@3.3.6 \u2014 at incident time (Oct 2018) 'latest' resolved to the poisoned 3.3.6 release. Maintainer pinned to '3.3.4' in v1.2.1 published 2018-11-26 (post-incident).",
+      "L3: Not reachable (analysed 16 .js file(s) in live-server-1.2.0.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
+    ]
+  },
+  {
     "name": "nodemon",
-    "version": "1.18.6",
+    "version": "1.12.5",
+    "role": "consumer",
     "in_tree": true,
-    "declared_range": "TRANSITIVE via ps-tree ^1.1.0",
+    "declared_range": "TRANSITIVE via ps-tree@^1.1.0",
     "semver_admits": null,
     "symbol_reachable": false,
     "evidence": [
-      "L1: present in resolved event-stream dependency graph (nodemon@1.18.6)",
-      "L2: No direct event-stream dependency declared. L2 gate N/A (TRANSITIVE via ps-tree ^1.1.0)",
-      "L3: Not reachable (analysed 29 .js file(s) in nodemon-1.18.6.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
-    ]
-  },
-  {
-    "name": "from",
-    "version": "0.1.7",
-    "in_tree": true,
-    "declared_range": "NONE",
-    "semver_admits": null,
-    "symbol_reachable": false,
-    "evidence": [
-      "L1: present in resolved event-stream dependency graph (from@0.1.7)",
-      "L2: No direct event-stream dependency declared. L2 gate N/A (NONE)",
-      "L3: Not reachable (analysed 2 .js file(s) in from-0.1.7.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
-    ]
-  },
-  {
-    "name": "through",
-    "version": "2.3.8",
-    "in_tree": true,
-    "declared_range": "NONE",
-    "semver_admits": null,
-    "symbol_reachable": false,
-    "evidence": [
-      "L1: present in resolved event-stream dependency graph (through@2.3.8)",
-      "L2: No direct event-stream dependency declared. L2 gate N/A (NONE)",
-      "L3: Not reachable (analysed 6 .js file(s) in through-2.3.8.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
-    ]
-  },
-  {
-    "name": "split",
-    "version": "1.0.1",
-    "in_tree": true,
-    "declared_range": "NONE",
-    "semver_admits": null,
-    "symbol_reachable": false,
-    "evidence": [
-      "L1: present in resolved event-stream dependency graph (split@1.0.1)",
-      "L2: No direct event-stream dependency declared. L2 gate N/A (NONE)",
-      "L3: Not reachable (analysed 6 .js file(s) in split-1.0.1.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
-    ]
-  },
-  {
-    "name": "stream-combiner",
-    "version": "0.2.2",
-    "in_tree": true,
-    "declared_range": "NONE",
-    "semver_admits": null,
-    "symbol_reachable": false,
-    "evidence": [
-      "L1: present in resolved event-stream dependency graph (stream-combiner@0.2.2)",
-      "L2: No direct event-stream dependency declared. L2 gate N/A (NONE)",
-      "L3: Not reachable (analysed 2 .js file(s) in stream-combiner-0.2.2.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
+      "L1: nodemon@1.12.5 is present in the event-stream dependency graph as a consumer (depends on event-stream).",
+      "L2: N/A \u2014 nodemon has no direct event-stream dependency. It resolves event-stream transitively via ps-tree@^1.1.0, which declares event-stream ~3.3.0 (ADMITS 3.3.6).",
+      "L3: Not reachable (analysed 28 .js file(s) in nodemon-1.12.5.tgz) \u2014 static scan of all .js files found zero flatmap-stream references"
     ]
   }
 ]

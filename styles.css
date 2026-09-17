@@ -11,6 +11,9 @@
 
   --red:           #ef4444;
   --red-glow:      rgba(239,68,68,0.35);
+  --source-red:    #881337;
+  --source-border: #f43f5e;
+  --source-glow:   rgba(244,63,94,0.6);
   --amber:         #f59e0b;
   --amber-glow:    rgba(245,158,11,0.35);
   --green:         #10b981;
@@ -132,13 +135,14 @@ html, body {
 .legend-title { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--text-3); letter-spacing: .4px; }
 .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.dot.red   { background: var(--red);   box-shadow: 0 0 8px var(--red-glow); }
-.dot.amber { background: var(--amber); box-shadow: 0 0 8px var(--amber-glow); }
-.dot.green { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
+.dot.source { background: #e11d48; border: 2px solid #fda4af; box-shadow: 0 0 10px var(--source-glow); }
+.dot.red    { background: var(--red);   box-shadow: 0 0 8px var(--red-glow); }
+.dot.amber  { background: var(--amber); box-shadow: 0 0 8px var(--amber-glow); }
+.dot.green  { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
 
 /* ─── SIDE PANEL ──────────────────────────────────────────── */
 .side-panel {
-  width: 340px; flex-shrink: 0;
+  width: 380px; flex-shrink: 0;
   background: var(--bg-card); backdrop-filter: blur(16px);
   border-left: 1px solid var(--border);
   display: flex; flex-direction: column;
@@ -153,9 +157,10 @@ html, body {
   display: inline-block; padding: 3px 10px; border-radius: 6px;
   font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
 }
-.status-badge.red   { background: rgba(239,68,68,.18); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
-.status-badge.amber { background: rgba(245,158,11,.18); color: #fbbf24; border: 1px solid rgba(245,158,11,.3); }
-.status-badge.green { background: rgba(16,185,129,.15); color: #34d399; border: 1px solid rgba(16,185,129,.25); }
+.status-badge.source { background: rgba(225,29,72,.25); color: #fda4af; border: 1px solid rgba(244,63,94,.5); }
+.status-badge.red    { background: rgba(239,68,68,.18); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+.status-badge.amber  { background: rgba(245,158,11,.18); color: #fbbf24; border: 1px solid rgba(245,158,11,.3); }
+.status-badge.green  { background: rgba(16,185,129,.15); color: #34d399; border: 1px solid rgba(16,185,129,.25); }
 
 .evidence-header {
   font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -173,16 +178,17 @@ html, body {
 
 /* ─── FOOTER ──────────────────────────────────────────────── */
 .footer-strip {
-  height: 44px; flex-shrink: 0;
-  background: rgba(7,9,14,.9); border-top: 1px solid var(--border);
+  min-height: 52px; flex-shrink: 0;
+  background: rgba(7,9,14,.95); border-top: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 20px; font-size: 12px; color: var(--text-2); z-index: 10;
+  padding: 8px 20px; font-size: 12px; color: var(--text-2); z-index: 10;
+  gap: 16px;
 }
 .footer-impact {
-  display: flex; align-items: center; gap: 7px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: flex-start; gap: 8px;
+  line-height: 1.45;
 }
-.footer-icon { color: var(--amber); }
+.footer-icon { color: var(--amber); flex-shrink: 0; margin-top: 1px; }
 .footer-link {
   color: var(--blue); text-decoration: none; font-weight: 500;
   white-space: nowrap; flex-shrink: 0;

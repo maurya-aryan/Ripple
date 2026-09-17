@@ -1,9 +1,11 @@
 {
+  "name": "string — npm package name (or package)",
   "package": "string — npm package name",
   "version": "string",
+  "role": "string — 'compromise_source' | 'consumer'",
   "in_tree": "bool — L1: present in resolved dependency tree",
-  "declared_range": "string — semver range this consumer declared on flatmap-stream",
-  "semver_admits": "bool | null — L2: null until computed",
+  "declared_range": "string — semver range declared for dependency",
+  "semver_admits": "bool | null — L2: true / false / null",
   "symbol_reachable": "bool | null — L3: true / false / null=UNKNOWN, never guessed",
   "evidence": "string[] — human-readable reasons, filled in by whichever gate resolves it"
 }
